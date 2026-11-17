@@ -253,9 +253,17 @@ class Session {
 
       let failure: ProviderError;
       try {
-        const env = Object.fromEntries(Object.entries(this.config.env).filter(([key]) => ![
-          ownerEnvKey, "PASEO_AGENT_ID", "PASEO_AGENT_CWD", "PASEO_WORKSPACE_ID", "PASEO_THREAD_STORAGE",
-        ].includes(key)));
+        // The daemon and its plugins supply the new backend's own identity and thread storage.
+        const {
+          [ownerEnvKey]: _owner,
+          PASEO_AGENT_ID: _agent,
+          PASEO_AGENT_CWD: _cwd,
+          PASEO_WORKSPACE_ID: _workspace,
+          PASEO_THREAD_STORAGE: _thread,
+          BB_THREAD_STORAGE: _genuiThread,
+          ...env
+        } = this.config.env;
+        const { paseo: _orchestration, ...mcpServers } = this.config.mcpServers;
         const agent = existing ? paseo.agents.ref(worker.id) : await workspace.agents.create({
           agentId: worker.id,
           title: `Cheapskate · ${selection}`,
@@ -265,7 +273,7 @@ class Session {
           config: {
             provider: selection,
             systemPrompt: this.config.systemPrompt,
-            mcpServers: { ...this.config.mcpServers },
+            mcpServers,
             toolPolicy: this.config.toolPolicy,
           },
         });
