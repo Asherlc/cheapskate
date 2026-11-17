@@ -1,0 +1,31 @@
+{
+  "name": "cheapskate",
+  "private": true,
+  "version": "0.1.0",
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "icon.svg",
+    "client/",
+    "server/",
+    "shared/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "@getpaseo/client": "0.16.1",
+    "@getpaseo/plugin": "0.16.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "type": "module",
+  "description": "One selectable Paseo model backed by an ordered fallback chain."
+}
