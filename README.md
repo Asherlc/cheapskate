@@ -12,9 +12,13 @@ paseo plugin install git:Asherlc/cheapskate
 
 Open **Settings → Plugins → Cheapskate** on that host. Select **Add backend**, choose a provider and a model, then arrange the entries in the order Cheapskate should try them. Save to apply the chain. The pickers use that host’s catalog. If a saved provider or model becomes unavailable, its entry stays in the chain until you replace or remove it.
 
+Use **Check chain** to see which models are listed and how the first choice’s permission mode maps to each fallback. The check uses provider defaults and makes no model requests. Account access and remaining quota are determined when a backend runs a turn.
+
 ## Composer controls
 
 Cheapskate shows the primary backend's thinking levels, permission modes, and provider controls in a draft. A running chat shows the controls of its active backend. Changes apply to the next turn. If changing a setting requires a new backing session, Cheapskate passes it the recent context and continues in the same chat.
+
+Select the backend name next to the composer to see the reason for the latest switch. **Try primary again** queues the first choice for the next message. Cheapskate checks permission compatibility and runs the ordinary fallback chain if that backend still hits a limit.
 
 On failover, Cheapskate uses the nearest available thinking level and a known equivalent or stricter permission mode. It skips a backend whose policy cannot preserve the selected restrictions. The timeline shows the backend and settings selected for the attempt. After a plugin reload, opening a Cheapskate draft populates the catalog used by CLI commands that specify a mode.
 

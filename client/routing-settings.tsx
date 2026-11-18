@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { parseChain, preferences, providerId } from "../shared/settings";
 import { formatChain, moveRow, readRows, searchModels, type CatalogModel, type ChainRow } from "./chain-picker";
+import { ChainCheck } from "./chain-check";
 
 type ReadySettings = Extract<ReturnType<typeof useSettings<typeof preferences.schema>>, { status: "ready" }>;
 type Theme = PluginSurfaceProps["theme"];
@@ -143,6 +144,7 @@ function RoutingForm({ settings, theme }: { settings: ReadySettings; theme: Them
             const id = nextId.current++;
             setRows((current) => [...current, { id, provider: "", model: "" }]);
           }} />
+        <ChainCheck key={chain} chain={parsed?.success ? parsed.data.chain : null} theme={theme} />
       </SettingsSection>
       <SettingsSwitch label="Switch on provider overload" value={overload} onValueChange={setOverload} disabled={settings.saving} />
       <SettingsAction

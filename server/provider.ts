@@ -14,9 +14,10 @@ import {
   type ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
 import { providerId } from "../shared/settings";
+import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, type RouteChange } from "../shared/route-status";
 import { parseMessage, runBackend, type PaseoApi } from "./backend";
 import { createCheckpoint, type Checkpoint } from "./checkpoint";
-import { closestMode, closestThinking, fallbackOptions, readControls, type BackendControls, type Options } from "./controls";
+import { closestThinking, readControls, routePermissions, type BackendControls, type Options } from "./controls";
 import { canFallback, handoffPrompt, type Routing } from "./routing";
 
 export const ownerEnvKey = "CHEAPSKATE_OWNER_AGENT_ID";
@@ -334,11 +335,16 @@ class Session {
     if (!chain.length) throw new Error("Add a fallback chain in Settings → Plugins → Cheapskate.");
 
     const paseo = this.requirePaseo();
-    const owner = await paseo.agents.ref(this.owner).refresh();
+    const ownerAgent = paseo.agents.ref(this.owner);
+    const owner = await ownerAgent.refresh();
     if (!owner?.agent.workspaceId) throw new Error("Cheapskate needs an active Paseo workspace.");
     const workspace = paseo.workspaces.ref(owner.agent.workspaceId);
     const oldWorker = this.state.worker;
-    const initialSelection = oldWorker && chain.includes(oldWorker.selection) ? oldWorker.selection : chain[0];
+    const metadata = owner.agent.metadata ?? {};
+    let publishedRoute = activeRoute.safeParse(metadata[activeRouteKey]).data;
+    const primaryRequest = metadata[primaryRequestKey];
+    const tryPrimary = typeof primaryRequest === "number" && primaryRequest !== metadata[handledPrimaryKey];
+    const initialSelection = !tryPrimary && oldWorker && chain.includes(oldWorker.selection) ? oldWorker.selection : chain[0];
     const first = chain.indexOf(initialSelection);
     const sourceSelection = this.state.lastSelection ?? oldWorker?.selection ?? initialSelection;
     const source = this.backend ?? await readControls(paseo, sourceSelection, this.config.cwd, this.selected.options);
@@ -347,9 +353,13 @@ class Session {
       thinking: this.selected.thinking ?? source.defaultThinking,
       options: { ...source.options, ...this.selected.options },
     };
-    if (oldWorker?.inFlight || (oldWorker && oldWorker.selection !== initialSelection)) {
-      await this.archiveWorker(paseo);
+    if (signal.aborted) return "canceled";
+    if (tryPrimary) await ownerAgent.setMetadata({ [handledPrimaryKey]: primaryRequest }).catch(() => {});
+    let change: RouteChange | undefined;
+    if (oldWorker && initialSelection !== oldWorker.selection) {
+      change = { reason: tryPrimary ? "requested" : "removed", from: this.backend?.label ?? oldWorker.selection };
     }
+    if (oldWorker?.inFlight) await this.archiveWorker(paseo);
 
     let failure: ProviderError | undefined;
     for (const [index, selection] of chain.entries()) {
@@ -360,29 +370,37 @@ class Session {
       try {
         backend = selection === source.selection ? source : await readControls(paseo, selection, this.config.cwd);
       } catch (error) {
+        if (!change || change.reason === "requested" || change.reason === "removed") {
+          change = { reason: "unavailable", from: selection };
+        }
         this.record({
           type: "notification", id: `backend-skip:${turn.id}:${index}`, level: "warning",
           message: `Skipped ${selection} because Paseo could not read its controls: ${toError(error).message}`,
         });
         continue;
       }
-      const mode = selection === source.selection ? intent.mode : closestMode(intent.mode, source, backend);
-      const options = selection === source.selection
-        ? intent.options : fallbackOptions(source, backend, intent.options, mode ?? undefined);
-      if (mode === null || options === null) {
+      const permissions = selection === source.selection
+        ? { mode: intent.mode, options: intent.options }
+        : routePermissions(intent.mode, source, backend, intent.options);
+      if (!permissions) {
+        if (!change || change.reason === "requested" || change.reason === "removed") {
+          change = { reason: "permissions", from: backend.label };
+        }
         this.record({
           type: "notification", id: `permission-skip:${turn.id}:${index}`, level: "warning",
           message: `Skipped ${selection} because it cannot preserve this permission mode or policy.`,
         });
         continue;
       }
+      const { mode, options } = permissions;
       const thinking = closestThinking(intent.thinking, backend.thinking) ?? backend.defaultThinking;
       const requested: Selection = {
         ...(mode ? { mode } : {}),
         ...(thinking ? { thinking } : {}),
         options,
       };
-      if (this.state.worker && !isDeepStrictEqual(this.state.worker.config, requested)) {
+      if (this.state.worker && (this.state.worker.selection !== selection
+        || !isDeepStrictEqual(this.state.worker.config, requested))) {
         await this.archiveWorker(paseo);
       }
       if (signal.aborted) return "canceled";
@@ -436,11 +454,18 @@ class Session {
         this.state.lastSelection = selection;
         this.selected = requested;
         this.publishConfig();
+        const routeChange = change ?? (publishedRoute?.selection === selection ? publishedRoute.change : undefined);
+        const currentRoute = { selection, label: backend.label, ...(routeChange && { change: routeChange }) };
+        if (!isDeepStrictEqual(currentRoute, publishedRoute)) {
+          await ownerAgent.setMetadata({ [activeRouteKey]: currentRoute })
+            .then(() => { publishedRoute = currentRoute; })
+            .catch(() => {});
+        }
         if (!existing) {
           const settings = [mode && `mode ${mode}`, thinking && `thinking ${thinking}`].filter(Boolean).join(", ");
           this.record({
             type: "notification", id: `route:${turn.id}:${attemptId}`, level: "info",
-            message: `Cheapskate is using ${selection}${settings ? ` (${settings})` : ""}.`,
+            message: `Cheapskate is using ${backend.label}${settings ? ` (${settings})` : ""}.`,
           });
         }
         const prompt = existing ? message : {
@@ -478,10 +503,11 @@ class Session {
       if (!canFallback(failure, overload)) {
         throw new Error(`${selection}: ${failure.message}`);
       }
+      change = { reason: "limit", from: backend.label };
       if (index + 1 < chain.length) {
         this.record({
           type: "notification", id: `fallback:${turn.id}:${attemptId}`, level: "warning",
-          message: `${selection} hit a provider limit. Looking for the next compatible backend.`,
+          message: `${backend.label} hit a provider limit. Looking for the next compatible backend.`,
         });
       }
     }

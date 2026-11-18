@@ -2,6 +2,8 @@ import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin
 import { archiveBackend, createProvider, ownerEnvKey } from "./server/provider";
 import { parseChain, preferences, providerId } from "./shared/settings";
 import { prepareDraft } from "./shared/controls";
+import { checkChain } from "./shared/chain-check";
+import { inspectChain } from "./server/chain-check";
 import { readControls } from "./server/controls";
 import { createCheckpoint } from "./server/checkpoint";
 
@@ -24,6 +26,7 @@ export default function contribute(server: PluginServerContext) {
   }
 
   server.registerProvider(createProvider({ getRouting, getPaseo: () => paseo }));
+  server.handle(checkChain, ({ chain }, context) => inspectChain(context.paseo, parseChain(chain)));
   server.handle(prepareDraft, async (_input, context) => {
     paseo = context.paseo;
     const { chain } = await getRouting();

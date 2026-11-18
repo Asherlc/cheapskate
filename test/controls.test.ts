@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { closestThinking, closestMode, fallbackOptions } from "../server/controls.ts";
+import { closestThinking, closestMode, fallbackOptions, routePermissions } from "../server/controls.ts";
 
 const levels = (...ids: string[]) => ids.map((id) => ({ id, label: id }));
 const openCode = (id: string) => ({ id, family: "opencode", modes: levels("build", "plan") });
@@ -35,4 +35,12 @@ test("permission options are preserved only when there is a safe mapping", () =>
   assert.equal(fallbackOptions(source, claude, { permission: { bash: "deny" } }), null);
   assert.deepEqual(fallbackOptions(claude, destination, { fast: true }), { auto_accept: false, permission: "ask" });
   assert.deepEqual(fallbackOptions(claude, destination, {}, "plan"), { auto_accept: false, permission: "deny" });
+});
+
+test("routing rejects a fallback with compatible modes but incompatible permission options", () => {
+  const source = openCode("opencode");
+  assert.equal(routePermissions("plan", source, claude, { permission: { bash: "deny" } }), null);
+  assert.deepEqual(routePermissions("plan", claude, source, {}), {
+    mode: "plan", options: { auto_accept: false, permission: "deny" },
+  });
 });

@@ -10,6 +10,8 @@ export type Options = NonNullable<ProviderConfigState["providerOptions"]>;
 type ModeCatalog = { id: string; family: string; modes: readonly ProviderMode[] };
 export type BackendControls = ModeCatalog & {
   selection: string;
+  label: string;
+  selectable: boolean;
   defaultMode?: string;
   thinking: readonly ProviderThinkingOption[];
   defaultThinking?: string;
@@ -90,6 +92,15 @@ export function fallbackOptions(
   return {};
 }
 
+export function routePermissions(
+  desired: string | undefined, source: ModeCatalog, destination: ModeCatalog, options: Options,
+) {
+  const mode = closestMode(desired, source, destination);
+  if (mode === null) return null;
+  const mapped = fallbackOptions(source, destination, options, mode);
+  return mapped === null ? null : { mode, options: mapped };
+}
+
 export async function readControls(
   paseo: PaseoApi, selection: string, cwd?: string, options?: Options,
 ): Promise<BackendControls> {
@@ -114,7 +125,8 @@ export async function readControls(
   const thinking = (model.thinkingOptions ?? []).map(({ id, label, description, isDefault }) =>
     ({ id, label, description, isDefault }));
   return {
-    id, family, selection, modes: modes ?? [],
+    id, family, selection, label: `${provider?.label ?? id} · ${model.label}`,
+    selectable: model.isSelectable !== false, modes: modes ?? [],
     defaultMode: provider?.defaultModeId
       ?? (family === "opencode" && modes?.some(({ id }) => id === "build") ? "build" : undefined),
     thinking, defaultThinking: model.defaultThinkingOptionId,
