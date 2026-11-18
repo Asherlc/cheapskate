@@ -5,7 +5,7 @@
   "requirements": {
     "paseo": ">=0.16.1"
   },
-  "icon": "assets/icon.png",
+  "icon": "assets/icon-raccoon.png",
   "media": [
     "assets/settings.png",
     "assets/fallback.png"
