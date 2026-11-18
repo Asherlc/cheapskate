@@ -38,3 +38,32 @@ npm run typecheck
 npm test
 paseo plugin reload cheapskate
 ```
+
+## CI and releases
+
+GitHub Actions runs typechecking, tests, and a package dry run on pull requests and
+pushes to `main`. Each passing push to `main` automatically increments the patch
+version in `package.json` and `package-lock.json`, pushes a `v` tag, and publishes
+a GitHub release with generated notes. The version commit uses `[skip ci]` to
+avoid starting another release. Do not bump the version manually for patch releases.
+
+After releasing, CI opens a version-specific submission issue in
+[`getpaseo/plugins`](https://github.com/getpaseo/plugins), pinned to the release
+commit. Marketplace publication still requires Paseo's review and approval.
+This keeps the existing Git distribution; no npm publishing credential is needed.
+
+Set the **`MARKETPLACE_TOKEN`** Actions secret in this repository before the first
+release. Use a dedicated classic GitHub personal access token with only
+`public_repo` scope, owned by the listing author, so it can open issues in the
+public registry repository. The built-in `GITHUB_TOKEN` is restricted to this
+repository and cannot submit there. Registry intake recognizes the issue's
+`Source` section and applies the submission label, so the token does not need
+collaborator access to the registry.
+
+If submission fails, fix the credential or service error and choose **Re-run failed
+jobs** in Actions. The marketplace job reuses the completed release and skips an
+issue with the same title, including closed issues. Re-running all jobs also
+reuses the tag when it belongs to the original source revision. The workflow can
+be started manually on `main` to make a new patch release without another source
+change. If `main` moves while a release runs, its atomic push fails; the next
+push's run checks and releases the newer revision.

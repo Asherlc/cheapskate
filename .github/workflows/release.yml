@@ -1,0 +1,126 @@
+name: CI and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm pack --dry-run --ignore-scripts
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Bump patch version and publish GitHub release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          tag=$(npm version patch --no-git-tag-version --ignore-scripts)
+
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            # A retry must reuse this run's release, never an unrelated version.
+            commit=$(git rev-parse "$tag^{commit}")
+            test "$(git rev-parse "$commit^")" = "$GITHUB_SHA"
+            git diff --exit-code "$commit" -- package.json package-lock.json
+          else
+            git add package.json package-lock.json
+            git commit -m "chore: release $tag [skip ci]"
+            commit=$(git rev-parse HEAD)
+            git tag "$tag"
+            # Fail without publishing if main moved since this revision was checked.
+            git push --atomic origin HEAD:refs/heads/main "refs/tags/$tag"
+          fi
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --verify-tag --target "$commit" \
+              --title "Cheapskate $tag" --generate-notes
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  marketplace:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Submit the released revision to the Paseo marketplace
+        env:
+          GH_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
+          GH_REPO: getpaseo/plugins
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::error::Set the MARKETPLACE_TOKEN repository secret to a GitHub personal access token with public_repo scope. Then rerun failed jobs; the release already exists.'
+            exit 1
+          fi
+
+          title="Cheapskate $RELEASE_TAG marketplace update"
+          existing=$(gh issue list --state all --search "$title in:title" \
+            --json title,url --jq ".[] | select(.title == \"$title\") | .url")
+          if [ -n "$existing" ]; then
+            echo "Already submitted: $existing"
+            exit 0
+          fi
+
+          cat > "$RUNNER_TEMP/submission.md" <<EOF
+          ### Source
+
+          https://github.com/$SOURCE_REPO/tree/$RELEASE_COMMIT
+
+          Update the existing asherlc/cheapskate listing to $RELEASE_TAG.
+          Release: https://github.com/$SOURCE_REPO/releases/tag/$RELEASE_TAG
+
+          CI passed typechecking, tests, and the package dry run for the source revision.
+          The release commit changes only the package version and lockfile.
+
+          Settings screenshot:
+          https://raw.githubusercontent.com/$SOURCE_REPO/$RELEASE_COMMIT/assets/settings.png
+
+          Fallback screenshot (simulated quota failure):
+          https://raw.githubusercontent.com/$SOURCE_REPO/$RELEASE_COMMIT/assets/fallback.png
+
+          ### Categories
+
+          - [x] Providers
+          EOF
+
+          # Registry intake recognizes the Source section and adds its submission label.
+          gh issue create --title "$title" --body-file "$RUNNER_TEMP/submission.md"
