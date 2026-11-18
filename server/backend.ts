@@ -1,10 +1,13 @@
-import type { PaseoAgentHandle } from "@getpaseo/client";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import {
   ProviderEventSchema,
   type ProviderContent,
   type ProviderError,
   type ProviderEvent,
 } from "@getpaseo/plugin/server/provider";
+
+export type PaseoApi = PluginHandlerContext["paseo"];
+type PaseoAgentHandle = ReturnType<PaseoApi["agents"]["ref"]>;
 
 export type Message = {
   text: string;

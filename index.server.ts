@@ -1,14 +1,13 @@
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { archiveBackend, createProvider, ownerEnvKey } from "./server/provider";
 import { parseChain, preferences, providerId } from "./shared/settings";
-import type { PaseoApi } from "@getpaseo/client";
 import { prepareDraft } from "./shared/controls";
 import { readControls } from "./server/controls";
 import { createCheckpoint } from "./server/checkpoint";
 
 export default function contribute(server: PluginServerContext) {
   const settings = server.registerSettings(preferences);
-  let paseo: PaseoApi | undefined;
+  let paseo: PluginHandlerContext["paseo"] | undefined;
   const unhookCreate = server.addHook("agent.create.before", async ({ request }, context) => {
     if (request.config.provider === providerId) paseo = context.paseo;
   });

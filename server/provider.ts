@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { PaseoApi } from "@getpaseo/client";
 import {
   PROVIDER_PROTOCOL_VERSION,
   negotiateProviderCapabilities,
@@ -15,7 +14,7 @@ import {
   type ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
 import { providerId } from "../shared/settings";
-import { parseMessage, runBackend } from "./backend";
+import { parseMessage, runBackend, type PaseoApi } from "./backend";
 import { createCheckpoint, type Checkpoint } from "./checkpoint";
 import { closestMode, closestThinking, fallbackOptions, readControls, type BackendControls, type Options } from "./controls";
 import { canFallback, handoffPrompt, type Routing } from "./routing";
