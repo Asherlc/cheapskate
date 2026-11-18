@@ -10,7 +10,8 @@
     "icon.svg",
     "client/",
     "server/",
-    "shared/"
+    "shared/",
+    "assets/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -27,5 +28,14 @@
     "zod": "^4.4.3"
   },
   "type": "module",
-  "description": "One selectable Paseo model backed by an ordered fallback chain."
+  "description": "One selectable Paseo model backed by an ordered fallback chain.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Asherlc/cheapskate.git"
+  },
+  "homepage": "https://github.com/Asherlc/cheapskate",
+  "bugs": {
+    "url": "https://github.com/Asherlc/cheapskate/issues"
+  }
 }

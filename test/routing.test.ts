@@ -30,3 +30,16 @@ test("handoff includes the latest request and bounded context, excluding reasoni
   assert.ok(prompt.length < 3000);
   assert.equal(handoffPrompt([], "plain prompt"), "plain prompt");
 });
+
+test("handoff redacts recognized credentials from historical text", () => {
+  const token = "ghp_" + "s".repeat(36);
+  const key = "sk-proj-" + "x".repeat(48);
+  const prompt = handoffPrompt([
+    { type: "user_message", text: "Old GitHub token " + token },
+    { type: "assistant_message", text: "Old OpenAI key " + key },
+  ], "Continue with the previous task.");
+  assert.doesNotMatch(prompt, new RegExp(token + "|" + key));
+  assert.match(prompt, /Old GitHub token \[REDACTED\]/);
+  assert.match(prompt, /Old OpenAI key \[REDACTED\]/);
+  assert.match(prompt, /Continue with the previous task\.$/);
+});

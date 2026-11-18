@@ -4,10 +4,10 @@ Select **Cheapskate** as your provider and model, or use `cheapskate/cheapskate`
 
 ## Install and configure
 
-Requires Paseo 0.16.1 or newer. Enable plugins in Paseo, then run this command on the daemon host from a checkout of this repository.
+Requires Paseo 0.16.1 or newer. Enable plugins in Paseo, then install the tagged release from your daemon host.
 
 ```sh
-paseo plugin install "$PWD"
+paseo plugin install git:Asherlc/cheapskate --ref v0.1.0
 ```
 
 Open **Settings → Plugins → Cheapskate** on that host. Add one backend per line in `provider/model` format and save. Use `paseo provider ls` and `paseo provider models <provider>` to find the exact IDs. Keep any slash already in a model ID. For example, if the OpenCode model ID is `vendor/example`, enter `opencode/vendor/example`. The chain starts empty. Its order controls which accounts and models can be used.
@@ -22,7 +22,7 @@ On failover, Cheapskate uses the nearest available thinking level and a known eq
 
 Cheapskate switches on quota and rate-limit failures. You can opt in to switching on provider overload. Ordinary errors stop the turn and surface in the chat. Each backend is tried once in a turn. A successful backend handles subsequent turns until it fails or is removed from the chain. Settings changes take effect on the next turn.
 
-When Cheapskate starts a new backend mid-conversation, it passes along the latest message (including any attachments) and a bounded excerpt of recent user and assistant text and tool names. The backend starts its own native session in the same workspace and can inspect edits already made there. Credentials, billing, and tool approvals follow the configured backend. Provider-specific slash commands, steering, and rewind are outside the shared model interface.
+When Cheapskate starts a new backend mid-conversation, it passes along the latest message (including any attachments) and a bounded excerpt of recent user and assistant text and tool names. Cheapskate masks common access tokens and private-key blocks in historical text. The latest message and its attachments are forwarded normally. The backend starts its own native session in the same workspace and can inspect edits already made there. Credentials, billing, and tool approvals follow the configured backend. Provider-specific slash commands, steering, and rewind are outside the shared model interface.
 
 Cheapskate saves up to 300 recent timeline items and the backing agent ID in `plugin-data/cheapskate` under the daemon's Paseo home. Chat excerpts can contain sensitive information. Configure only backends that may receive that context.
 

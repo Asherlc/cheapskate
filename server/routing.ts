@@ -17,6 +17,12 @@ export function canFallback(error: { message: string; code?: string }, overload:
   return rateLimit || quota || (overload && /\b(?:overloaded(?:_error)?|provider overload)\b/i.test(message));
 }
 
+function redactHistory(text: string) {
+  return text
+    .replace(/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/g, "[REDACTED]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|sk-[A-Za-z0-9_-]{24,}|xox[baprs]-[A-Za-z0-9-]{20,})\b/g, "[REDACTED]");
+}
+
 export function handoffPrompt(
   items: { type: string; text?: string; name?: string; status?: string }[],
   latest: string,
@@ -26,7 +32,7 @@ export function handoffPrompt(
     .slice(-16)
     .map((item) => item.type === "tool_call"
       ? `Tool activity: ${item.name} (${item.status})`
-      : `${item.type === "user_message" ? "User" : "Assistant"}: ${item.text?.slice(-1800)}`)
+      : `${item.type === "user_message" ? "User" : "Assistant"}: ${redactHistory(item.text ?? "").slice(-1800)}`)
     .join("\n\n");
   if (!excerpt) return latest;
   return [

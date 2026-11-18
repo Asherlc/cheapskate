@@ -6,6 +6,6 @@ Requires Paseo 0.16.1 or later. Open Settings → Plugins → Cheapskate and ent
 
 ## Routing and chat history
 
-The successful backend stays active for follow-up turns and supplies the chat's thinking levels, permission modes, and provider controls. On fallback, Cheapskate chooses the nearest available thinking level and skips backends that cannot preserve the selected permission restrictions. After a switch, the new backend receives your current message and a bounded excerpt of recent conversation and tool activity names. It can inspect files in the same workspace. Choose backends you are comfortable sharing that context with. Permission requests are relayed to the Cheapskate chat.
+The successful backend stays active for follow-up turns and supplies the chat's thinking levels, permission modes, and provider controls. On fallback, Cheapskate chooses the nearest available thinking level and skips backends that cannot preserve the selected permission restrictions. After a switch, the new backend receives your current message and a bounded excerpt of recent conversation and tool activity names. Cheapskate masks common credential formats in historical text. The new backend can inspect files in the same workspace. Choose backends you are comfortable sharing that context with. Permission requests are relayed to the Cheapskate chat.
 
 Paseo launches the backends as background agents. Cheapskate saves recent chat history and the active backend locally on the daemon so that a chat can recover after a runtime reload.

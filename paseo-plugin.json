@@ -2,5 +2,11 @@
   "id": "cheapskate",
   "name": "Cheapskate",
   "description": "One selectable Paseo model backed by an ordered fallback chain.",
-  "requirements": { "paseo": ">=0.16.1" }
+  "requirements": {
+    "paseo": ">=0.16.1"
+  },
+  "icon": "assets/icon.png",
+  "media": [
+    "assets/settings.png"
+  ]
 }
