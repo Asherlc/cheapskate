@@ -2,17 +2,25 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ProviderTimelineItem } from "@getpaseo/plugin/server/provider";
+import type { ProviderTimelineItem, ProviderUsage } from "@getpaseo/plugin/server/provider";
 
 import type { Options } from "./controls";
+import type { QuotaReset } from "./routing";
 
 export type WorkerState = {
   id: string;
   selection: string;
   inFlight: boolean;
   config?: { mode?: string; thinking?: string; options: Options };
+  lastUsage?: ProviderUsage | null;
 };
-export type Checkpoint = { items: ProviderTimelineItem[]; worker?: WorkerState; lastSelection?: string };
+export type Checkpoint = {
+  items: ProviderTimelineItem[];
+  worker?: WorkerState;
+  lastSelection?: string;
+  presetId?: string;
+  limits?: Record<string, QuotaReset>;
+};
 
 export function createCheckpoint(owner: string) {
   const root = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "plugin-data", "cheapskate");

@@ -4,6 +4,7 @@ import {
   type ProviderContent,
   type ProviderError,
   type ProviderEvent,
+  type ProviderUsage,
 } from "@getpaseo/plugin/server/provider";
 
 export type PaseoApi = PluginHandlerContext["paseo"];
@@ -39,7 +40,8 @@ export function parseMessage(content: ProviderContent[]): Message {
 }
 
 type BackendOutcome =
-  | { state: "completed" | "canceled" }
+  | { state: "completed"; usage?: ProviderUsage }
+  | { state: "canceled" }
   | { state: "failed"; error: ProviderError };
 
 export async function runBackend({
@@ -89,15 +91,17 @@ export async function runBackend({
     if (!started || ("turnId" in event && event.turnId && activeTurnId && event.turnId !== activeTurnId)) return;
 
     switch (event.type) {
-      case "turn_completed":
-        if (event.usage) emit({ type: "session.usage", sessionId, turnId, usage: event.usage });
-        completion.resolve({ state: "completed" });
+      case "turn_completed": {
+        const usage = event.usage;
+        if (usage) emit({ type: "session.usage", sessionId, turnId, usage });
+        completion.resolve({ state: "completed", usage });
         break;
+      }
       case "turn_canceled":
         completion.resolve({ state: "canceled" });
         break;
       case "turn_failed":
-        completion.resolve({ state: "failed", error: { message: event.error, code: event.code } });
+        completion.resolve({ state: "failed", error: { message: event.error, code: event.code, diagnostic: event.diagnostic } });
         break;
       case "permission_requested": {
         const { id, name, kind, title, description, actions } = event.request;

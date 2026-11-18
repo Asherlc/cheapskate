@@ -13,6 +13,9 @@ const control = z.discriminatedUnion("type", [
 
 export const prepareDraft = defineRpc({
   name: "routing.prepare-draft",
-  input: z.object({}),
-  output: z.object({ controls: z.array(control), options: z.record(z.string(), z.json()) }),
+  input: z.object({ model: z.string().optional() }),
+  output: z.object({
+    controls: z.array(control), options: z.record(z.string(), z.json()),
+    modes: z.array(z.object({ id: z.string(), label: z.string(), description: z.string().optional() })),
+  }),
 });

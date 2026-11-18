@@ -1,11 +1,11 @@
 import { type PluginSurfaceProps, usePaseo, useSettings } from "@getpaseo/plugin/client";
 import {
   FlatList, Modal, SettingsAction, SettingsCard, SettingsRow,
-  SettingsSection, SettingsSelect, SettingsSwitch, TextInput,
+  SettingsInput, SettingsSection, SettingsSelect, SettingsSwitch, TextInput,
 } from "@getpaseo/plugin/client/ui";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { parseChain, preferences, providerId } from "../shared/settings";
+import { defaultModel, listPresets, preferences, providerId, type BackendCost, type Preset } from "../shared/settings";
 import { formatChain, moveRow, readRows, searchModels, type CatalogModel, type ChainRow } from "./chain-picker";
 import { ChainCheck } from "./chain-check";
 
@@ -15,8 +15,10 @@ type Catalog = Awaited<ReturnType<ReturnType<typeof usePaseo>["providers"]["snap
 
 export function RoutingSettings({ host, theme }: PluginSurfaceProps) {
   const settings = useSettings(preferences);
+  const [selectedId, setSelectedId] = useState(defaultModel.id);
   if (settings.status === "ready") {
-    return <RoutingForm key={`${host.id}:${settings.revision}`} theme={theme} settings={settings} />;
+    return <RoutingForm key={`${host.id}:${settings.revision}`} theme={theme} settings={settings}
+      selectedId={selectedId} setSelectedId={setSelectedId} />;
   }
   if (settings.status === "loading") {
     return <Text style={{ color: theme.colors.foregroundMuted }}>Loading routing settings…</Text>;
@@ -63,10 +65,70 @@ function useProviderCatalog() {
   return { entries, error, retry: () => setAttempt((current) => current + 1) };
 }
 
-function RoutingForm({ settings, theme }: { settings: ReadySettings; theme: Theme }) {
-  const [rows, setRows] = useState(() => readRows(settings.values.chain));
-  const nextId = useRef(rows.length);
-  const [overload, setOverload] = useState(settings.values.overload);
+type EditableRow = ChainRow & { cost?: BackendCost };
+type EditablePreset = Omit<Preset, "chain" | "costs"> & { rows: EditableRow[] };
+
+function RoutingForm({ settings, theme, selectedId, setSelectedId }: {
+  settings: ReadySettings; theme: Theme; selectedId: string; setSelectedId(id: string): void;
+}) {
+  const [presets, setPresets] = useState<EditablePreset[]>(() => listPresets(settings.values).map(({ chain, costs, ...preset }) => ({
+    ...preset,
+    rows: readRows(chain).map((row) => ({ ...row, cost: costs[`${row.provider}/${row.model}`] })),
+  })));
+  const preset = presets.find(({ id }) => id === selectedId) ?? presets[0];
+  const base = preset.id === defaultModel.id;
+  const complete = presets.map(({ rows, ...route }) => ({
+    ...route,
+    chain: formatChain(rows),
+    costs: Object.fromEntries(rows.flatMap(({ provider, model, cost }) => cost ? [[`${provider}/${model}`, cost]] : [])),
+  }));
+  const [{ id: _id, name: _name, ...primary }, ...named] = complete;
+  const parsed = preferences.schema.safeParse({ ...primary, presets: named });
+  const invalid = complete.find(({ chain }) => chain === null);
+  const dirty = !parsed.success || JSON.stringify(parsed.data) !== JSON.stringify(settings.values);
+  const saveError = settings.saveError ?? (invalid ? `Choose a provider and model for every entry in ${invalid.name || "the unnamed chain"}.`
+    : !parsed.success ? parsed.error.issues[0]?.message : undefined);
+
+  function update(change: Partial<EditablePreset>) {
+    setPresets((current) => current.map((route) => route.id === preset.id ? { ...route, ...change } : route));
+  }
+
+  function addChain() {
+    const id = `chain-${Date.now().toString(36)}`;
+    const names = new Set(presets.map(({ name }) => name.toLowerCase()));
+    let index = 1;
+    while (names.has(`chain ${index}`)) index++;
+    setPresets((current) => [...current, { id, name: `Chain ${index}`, rows: [], billing: "ask", autoReturn: false, overload: false }]);
+    setSelectedId(id);
+  }
+
+  return <View style={{ gap: 16, padding: 16 }}>
+    <SettingsSection title="Named chains">
+      <SettingsSelect label="Chain" value={preset.id} options={presets.map(({ id, name }) => ({ value: id, label: name || "Unnamed chain" }))}
+        disabled={settings.saving} onValueChange={setSelectedId} />
+      <SettingsAction label="Add another selectable model" actionLabel="Add chain"
+        disabled={settings.saving || named.length >= 12} onPress={addChain} />
+      {!base && <SettingsCard>
+        <SettingsInput key={preset.id} label="Model name" initialValue={preset.name}
+          hint={`CLI model ID · ${preset.id}`} disabled={settings.saving} onChangeText={(name) => update({ name })} />
+        <SettingsAction label="Remove this chain" hint="Chats with this model can select another chain."
+          actionLabel="Remove chain" disabled={settings.saving} onPress={() => {
+            setPresets((current) => current.filter(({ id }) => id !== preset.id));
+            setSelectedId(defaultModel.id);
+          }} />
+      </SettingsCard>}
+    </SettingsSection>
+    <ChainEditor key={preset.id} preset={preset} theme={theme} saving={settings.saving} update={update} />
+    <SettingsAction label="Routing settings" actionLabel={settings.saving ? "Saving…" : "Save"}
+      disabled={!dirty || !parsed.success || settings.saving} error={saveError}
+      onPress={() => { if (parsed.success) void settings.save(parsed.data, settings.revision); }} />
+  </View>;
+}
+
+function ChainEditor({ preset, theme, saving, update }: {
+  preset: EditablePreset; theme: Theme; saving: boolean; update(change: Partial<EditablePreset>): void;
+}) {
+  const { rows, overload, autoReturn, billing } = preset;
   const [picking, setPicking] = useState<number>();
   const { entries, error, retry } = useProviderCatalog();
   const ready = (entries ?? []).filter(({ provider, status, enabled }) =>
@@ -76,20 +138,15 @@ function RoutingForm({ settings, theme }: { settings: ReadySettings; theme: Them
     .sort((a, b) => a.label.localeCompare(b.label));
   const discovering = entries === undefined || entries.some(({ status }) => status === "loading");
   const chain = formatChain(rows);
-  const parsed = chain === null ? null : preferences.schema.safeParse({ chain, overload });
-  const dirty = chain !== parseChain(settings.values.chain).join("\n") || overload !== settings.values.overload;
-  const saveError = settings.saveError ?? (chain === null
-    ? "Choose a provider and model for every entry."
-    : !parsed?.success ? parsed?.error.issues[0]?.message : undefined);
   const selected = rows.find(({ id }) => id === picking);
   const selectedProvider = ready.find(({ provider }) => provider === selected?.provider);
 
-  function patchRow(id: number, change: Partial<Pick<ChainRow, "provider" | "model">>) {
-    setRows((current) => current.map((row) => row.id === id ? { ...row, ...change } : row));
+  function patchRow(id: number, change: Partial<EditableRow>) {
+    update({ rows: rows.map((row) => row.id === id ? { ...row, ...change } : row) });
   }
 
   return (
-    <View style={{ gap: 16, padding: 16 }}>
+    <>
       <SettingsSection title="Fallback chain">
         <Text style={{ color: theme.colors.foregroundMuted }}>
           Cheapskate tries models from top to bottom. On fallback, the next backend receives recent chat context.
@@ -118,44 +175,48 @@ function RoutingForm({ settings, theme }: { settings: ReadySettings; theme: Them
             <SettingsCard key={row.id}>
               <SettingsRow label={index === 0 ? "First choice" : `Fallback ${index}`}>
                 <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
-                  <RowButton title="Move up" theme={theme} disabled={settings.saving || index === 0}
-                    onPress={() => setRows((current) => moveRow(current, row.id, -1))} />
-                  <RowButton title="Move down" theme={theme} disabled={settings.saving || index === rows.length - 1}
-                    onPress={() => setRows((current) => moveRow(current, row.id, 1))} />
-                  <RowButton title="Remove" theme={theme} disabled={settings.saving}
-                    onPress={() => setRows((current) => current.filter(({ id }) => id !== row.id))} />
+                  <RowButton title="Move up" theme={theme} disabled={saving || index === 0}
+                    onPress={() => update({ rows: moveRow(rows, row.id, -1) })} />
+                  <RowButton title="Move down" theme={theme} disabled={saving || index === rows.length - 1}
+                    onPress={() => update({ rows: moveRow(rows, row.id, 1) })} />
+                  <RowButton title="Remove" theme={theme} disabled={saving}
+                    onPress={() => update({ rows: rows.filter(({ id }) => id !== row.id) })} />
                 </View>
               </SettingsRow>
               <SettingsSelect label="Provider" value={row.provider} options={options}
-                disabled={settings.saving || providerOptions.length === 0}
+                disabled={saving || providerOptions.length === 0}
                 onValueChange={(value) => {
-                  if (value !== row.provider) patchRow(row.id, { provider: value, model: "" });
+                  if (value !== row.provider) patchRow(row.id, { provider: value, model: "", cost: undefined });
                 }} />
               <SettingsAction label="Model" actionLabel={model?.label ?? (row.model || "Choose model")}
                 hint={unavailable ? "This saved model is unavailable." : provider && !hasModels ? "No selectable models." : undefined}
-                disabled={settings.saving || !hasModels}
+                disabled={saving || !hasModels}
                 onPress={() => setPicking(row.id)} />
+              <SettingsSelect label="Billing" value={row.cost ?? "unknown"}
+                options={[{ value: "unknown", label: "Unclassified" }, { value: "free", label: "Free" }, { value: "paid", label: "Paid" }]}
+                disabled={saving || !row.provider || !row.model}
+                onValueChange={(cost) => patchRow(row.id, { cost: cost === "unknown" ? undefined : cost })} />
             </SettingsCard>
           );
         })}
         <SettingsAction label="Add a provider and model to the chain" actionLabel="Add backend"
-          disabled={settings.saving || providerOptions.length === 0}
+          disabled={saving || providerOptions.length === 0}
           onPress={() => {
-            const id = nextId.current++;
-            setRows((current) => [...current, { id, provider: "", model: "" }]);
+            const id = Math.max(-1, ...rows.map(({ id }) => id)) + 1;
+            update({ rows: [...rows, { id, provider: "", model: "" }] });
           }} />
-        <ChainCheck key={chain} chain={parsed?.success ? parsed.data.chain : null} theme={theme} />
+        <ChainCheck key={chain} chain={chain} theme={theme} />
       </SettingsSection>
-      <SettingsSwitch label="Switch on provider overload" value={overload} onValueChange={setOverload} disabled={settings.saving} />
-      <SettingsAction
-        label="Routing settings"
-        actionLabel={settings.saving ? "Saving…" : "Save"}
-        disabled={!dirty || !parsed?.success || settings.saving}
-        error={saveError}
-        onPress={() => {
-          if (parsed?.success) void settings.save(parsed.data, settings.revision);
-        }}
-      />
+      <SettingsSection title="Routing policy">
+        <SettingsSelect label="Billing policy" hint="Mark Free only for backends that cannot incur charges on this host."
+          value={billing} options={[{ value: "allow", label: "Allow configured backends" },
+            { value: "ask", label: "Ask before paid or unclassified" }, { value: "free-only", label: "Free only" }]}
+          disabled={saving} onValueChange={(billing) => update({ billing })} />
+        <SettingsSwitch label="Return after quota reset" hint="Try the earliest eligible backend on the next message after a reported reset."
+          value={autoReturn} onValueChange={(autoReturn) => update({ autoReturn })} disabled={saving} />
+        <SettingsSwitch label="Switch on provider overload" value={overload}
+          onValueChange={(overload) => update({ overload })} disabled={saving} />
+      </SettingsSection>
       {selected && selectedProvider && (
         <ModelPicker
           provider={selectedProvider.label ?? selectedProvider.provider}
@@ -163,12 +224,12 @@ function RoutingForm({ settings, theme }: { settings: ReadySettings; theme: Them
           theme={theme}
           close={() => setPicking(undefined)}
           select={(model) => {
-            patchRow(selected.id, { model });
+            if (model !== selected.model) patchRow(selected.id, { model, cost: undefined });
             setPicking(undefined);
           }}
         />
       )}
-    </View>
+    </>
   );
 }
 

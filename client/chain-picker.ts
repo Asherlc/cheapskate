@@ -20,7 +20,7 @@ export function formatChain(rows: readonly ChainRow[]) {
   return rows.map(({ provider, model }) => `${provider}/${model}`).join("\n");
 }
 
-export function moveRow(rows: ChainRow[], id: number, direction: -1 | 1) {
+export function moveRow<Row extends ChainRow>(rows: Row[], id: number, direction: -1 | 1) {
   const from = rows.findIndex((row) => row.id === id);
   const to = from + direction;
   if (from < 0 || to < 0 || to >= rows.length) return rows;

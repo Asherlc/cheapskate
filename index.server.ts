@@ -1,6 +1,6 @@
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { archiveBackend, createProvider, ownerEnvKey } from "./server/provider";
-import { parseChain, preferences, providerId } from "./shared/settings";
+import { defaultModel, listPresets, parseChain, preferences, primarySelection, providerId } from "./shared/settings";
 import { prepareDraft } from "./shared/controls";
 import { checkChain } from "./shared/chain-check";
 import { inspectChain } from "./server/chain-check";
@@ -19,24 +19,29 @@ export default function contribute(server: PluginServerContext) {
     return { ...request, env: { ...request.env, [ownerEnvKey]: request.agentId } };
   });
 
-  async function getRouting() {
+  async function getPresets() {
     const state = await settings.read();
     if (state.status === "invalid") throw new Error(state.error);
-    return { chain: parseChain(state.values.chain), overload: state.values.overload };
+    return listPresets(state.values);
   }
 
-  server.registerProvider(createProvider({ getRouting, getPaseo: () => paseo }));
+  server.registerProvider(createProvider({ getPresets, getPaseo: () => paseo }));
+  const unsubscribe = settings.subscribe(async () => {
+    await paseo?.providers.refresh({ providers: [providerId] }).catch(() => {});
+  });
   server.handle(checkChain, ({ chain }, context) => inspectChain(context.paseo, parseChain(chain)));
-  server.handle(prepareDraft, async (_input, context) => {
+  server.handle(prepareDraft, async ({ model = defaultModel.id }, context) => {
     paseo = context.paseo;
-    const { chain } = await getRouting();
-    if (!chain[0]) return { controls: [], options: {} };
-    const native = await readControls(paseo, chain[0]);
+    const preset = (await getPresets()).find(({ id }) => id === model);
+    const primary = preset ? primarySelection(preset) : undefined;
     await paseo.providers.refresh({ providers: [providerId] });
+    if (!primary) return { controls: [], options: {}, modes: [] };
+    const native = await readControls(paseo, primary);
     return {
       controls: native.controls.map((control) => control.type === "select"
         ? { ...control, choices: [...control.choices] } : control),
       options: native.options,
+      modes: native.modes.map(({ id, label, description }) => ({ id, label, description })),
     };
   });
 
@@ -52,5 +57,6 @@ export default function contribute(server: PluginServerContext) {
     unhookCreate();
     unhook();
     unhookArchive();
+    unsubscribe();
   };
 }

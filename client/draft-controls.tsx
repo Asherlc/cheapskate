@@ -2,7 +2,7 @@ import { useComposer, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { Select, Toggle } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { prepareDraft } from "../shared/controls";
-import { preferences, providerId } from "../shared/settings";
+import { defaultModel, preferences, providerId } from "../shared/settings";
 import type { z } from "zod";
 
 export function DraftControls() {
@@ -16,20 +16,26 @@ function BackendControls() {
   const prepare = useRpc(prepareDraft);
   const settings = useSettings(preferences);
   const revision = settings.status === "ready" ? settings.revision : undefined;
+  const model = composer.agent.model ?? undefined;
   const [catalog, setCatalog] = useState<z.output<typeof prepareDraft.output>>();
 
   useEffect(() => {
     if (revision === undefined) return;
     let active = true;
     setCatalog(undefined);
-    void prepare({}).then(
+    void prepare({ model }).then(
       (result) => { if (active) setCatalog(result); },
       () => { if (active) setCatalog(undefined); },
     );
     return () => { active = false; };
-  }, [prepare, revision]);
+  }, [prepare, revision, model]);
 
+  const chooseMode = model && model !== defaultModel.id && catalog?.modes.length
+    && !catalog.modes.some(({ id }) => composer.agent.mode === id);
   return <>
+    {chooseMode && <Select title="Permission mode for this chain" icon="Shield" value=""
+      options={catalog.modes.map(({ id, label, description }) => ({ value: id, label, description }))}
+      onValueChange={({ value }) => composer.setMode(value)} />}
     {catalog?.controls.map((control) => {
       const value = composer.agent.options[control.key] ?? catalog.options[control.key] ?? control.defaultValue;
       const apply = ({ value }: { value: boolean | string }) => composer.setOptions({ [control.key]: value });

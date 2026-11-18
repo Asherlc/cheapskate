@@ -2,8 +2,8 @@ import { useComposer, useSettings, type PluginComposerItemProps } from "@getpase
 import { Icon, Modal, SettingsAction, SettingsRow } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
 import { Pressable, Text } from "react-native";
-import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, type RouteChange } from "../shared/route-status";
-import { parseChain, preferences, providerId } from "../shared/settings";
+import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, quotaResets, quotaResetsKey, type RouteChange } from "../shared/route-status";
+import { findPreset, parseChain, preferences, primarySelection, providerId } from "../shared/settings";
 
 const describeChange: Record<RouteChange["reason"], (from: string) => string> = {
   limit: (from) => `${from} hit a provider limit.`,
@@ -11,6 +11,9 @@ const describeChange: Record<RouteChange["reason"], (from: string) => string> = 
   permissions: (from) => `${from} could not preserve the selected permissions.`,
   requested: (from) => `You asked to try the first choice again after using ${from}.`,
   removed: (from) => `${from} was removed from the chain.`,
+  recovered: (from) => `Cheapskate moved on from ${from} after a provider’s reported reset.`,
+  chain: (from) => `You selected a different chain after using ${from}.`,
+  billing: (from) => `The billing policy or approval skipped ${from}.`,
 };
 
 export function ActiveBackend(props: PluginComposerItemProps) {
@@ -26,7 +29,10 @@ function RouteDetails({ theme, layout }: PluginComposerItemProps) {
   const [error, setError] = useState<string>();
   const { metadata } = composer.agent;
   const route = activeRoute.safeParse(metadata[activeRouteKey]).data;
-  const primary = settings.status === "ready" ? parseChain(settings.values.chain)[0] : undefined;
+  const preset = settings.status === "ready" ? findPreset(settings.values, composer.agent.model ?? undefined) : undefined;
+  const chain = parseChain(preset?.chain ?? "");
+  const primary = preset ? primarySelection(preset) : undefined;
+  const limits = quotaResets.safeParse(metadata[quotaResetsKey]).data ?? {};
   const request = metadata[primaryRequestKey];
   const queued = typeof request === "number" && request !== metadata[handledPrimaryKey];
   const label = route?.label ?? "Cheapskate route";
@@ -53,14 +59,17 @@ function RouteDetails({ theme, layout }: PluginComposerItemProps) {
       <Icon name="Route" size={14} color={theme.colors.foreground} />
       <Text numberOfLines={1} style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 12 }}>{label}</Text>
     </Pressable>
-    {open && <Modal title="Cheapskate route" open onOpenChange={setOpen}>
+    {open && <Modal title={preset ? `${preset.name} route` : "Cheapskate route"} open onOpenChange={setOpen}>
       <Modal.Content>
         <SettingsRow label={route?.label ?? "Backend details unavailable"}
           hint={route?.change ? describeChange[route.change.reason](route.change.from)
             : route ? "Cheapskate is using this backend." : "Send a message to see the active backend."} />
+        {chain.filter((selection) => limits[selection]).map((selection) => <SettingsRow key={selection}
+          label={limits[selection].label} hint={`Reported reset · ${new Date(limits[selection].resetAt).toLocaleString()}`} />)}
         {primary && route && (route.selection !== primary || queued) && <SettingsAction
           label={`First choice · ${primary}`}
-          hint={queued ? "Cheapskate will try this backend on the next message." : "Queue the first choice for the next message."}
+          hint={queued ? "Cheapskate will try this backend on the next message if its reported reset has passed."
+            : "Queue the first choice for the next message."}
           actionLabel={queued ? "Queued" : "Try primary again"}
           disabled={saving || queued} error={error} onPress={() => void tryPrimary()} />}
       </Modal.Content>

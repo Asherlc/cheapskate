@@ -1,4 +1,29 @@
-export type Routing = { chain: string[]; overload: boolean };
+export type QuotaReset = { resetAt: number; label: string };
+
+export function startingBackend(
+  chain: string[], active: string | undefined, limits: Record<string, QuotaReset>,
+  autoReturn: boolean, tryPrimary: boolean, now: number,
+) {
+  const activeIndex = active === undefined ? -1 : chain.indexOf(active);
+  if (tryPrimary || activeIndex < 0) return chain[0];
+  const recovered = autoReturn && chain.slice(0, activeIndex).find((backend) => limits[backend]?.resetAt <= now);
+  return recovered || chain[activeIndex];
+}
+
+const zonedTimestamp = String.raw`\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d)`;
+const resetTimestamp = new RegExp(String.raw`\bresets?\s+at\s+(${zonedTimestamp})\b`, "i");
+
+export function providerResetAt(error: { message: string; diagnostic?: string }, now: number) {
+  const text = [error.message, error.diagnostic].filter(Boolean).join("\n");
+  const milliseconds = text.match(/\bretry-after-ms\s*:\s*(\d+)(?![.\d])/i)?.[1];
+  const seconds = text.match(/\bretry-after\s*:\s*(\d+)(?![.\d])/i)?.[1];
+  const headerDate = text.match(/\bretry-after\s*:\s*([A-Z]{3}, \d\d [A-Z]{3} \d{4} \d\d:\d\d:\d\d GMT)\b/i)?.[1];
+  const resetAt = resetTimestamp.exec(text)?.[1] ?? headerDate;
+  const value = milliseconds !== undefined ? now + Number(milliseconds)
+    : seconds !== undefined ? now + Number(seconds) * 1000
+    : resetAt ? Date.parse(resetAt) : NaN;
+  return Number.isFinite(value) && value > now && value <= 8.64e15 ? value : undefined;
+}
 
 export function canFallback(error: { message: string; code?: string }, overload: boolean) {
   const code = error.code?.toLowerCase().replaceAll("-", "_");

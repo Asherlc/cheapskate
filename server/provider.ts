@@ -8,31 +8,57 @@ import {
   type ProviderError,
   type ProviderEvent,
   type ProviderInput,
+  type ProviderModel,
   type ProviderPrompt,
   type ProviderRegistration,
   type ProviderSessionConfig,
   type ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
-import { providerId } from "../shared/settings";
-import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, type RouteChange } from "../shared/route-status";
+import { billingDecision, defaultModel, parseChain, primarySelection, providerId, type Preset } from "../shared/settings";
+import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, quotaResetsKey, type RouteChange } from "../shared/route-status";
+import { receiptKind, receiptSchema, type Receipt, type RouteStep } from "../shared/receipt";
 import { parseMessage, runBackend, type PaseoApi } from "./backend";
 import { createCheckpoint, type Checkpoint } from "./checkpoint";
 import { closestThinking, readControls, routePermissions, type BackendControls, type Options } from "./controls";
-import { canFallback, handoffPrompt, type Routing } from "./routing";
+import { canFallback, handoffPrompt, providerResetAt, startingBackend } from "./routing";
 
 export const ownerEnvKey = "CHEAPSKATE_OWNER_AGENT_ID";
-const model = { id: "cheapskate", label: "Cheapskate", isDefault: true };
-const defaultCatalog: ProviderCatalog = { models: [model], modes: [], defaultModel: model.id };
+const baseModel = { id: defaultModel.id, label: defaultModel.name, isDefault: true };
 
-function catalog(backend?: BackendControls): ProviderCatalog {
-  if (!backend) return defaultCatalog;
+function nativeModel(model: ProviderModel, backend?: BackendControls): ProviderModel {
+  if (!backend) return model;
   return {
-    models: [{ ...model, thinkingOptions: [...backend.thinking], defaultThinkingOptionId: backend.defaultThinking }],
-    modes: backend.modes,
-    thinkingOptions: backend.thinking,
-    defaultModel: model.id,
-    defaultMode: backend.defaultMode,
-    defaultThinkingOption: backend.defaultThinking,
+    ...model, thinkingOptions: [...backend.thinking], defaultThinkingOptionId: backend.defaultThinking,
+  };
+}
+
+function presetModel({ id, name }: Pick<Preset, "id" | "name">): ProviderModel {
+  return id === defaultModel.id ? baseModel : { id, label: name };
+}
+
+async function catalog(presets: Preset[], paseo?: PaseoApi, cwd?: string): Promise<ProviderCatalog> {
+  const primaries = new Map<string, Promise<BackendControls | undefined>>();
+  const backends = await Promise.all(presets.map(async (preset) => {
+    const primary = primarySelection(preset);
+    if (!paseo || !primary) return undefined;
+    let backend = primaries.get(primary);
+    if (!backend) {
+      backend = readControls(paseo, primary, cwd).catch(() => undefined);
+      primaries.set(primary, backend);
+    }
+    return backend;
+  }));
+  const primary = backends[0];
+  const modes = new Map(primary?.modes.map((mode) => [mode.id, mode]));
+  for (const backend of backends.slice(1)) {
+    for (const mode of backend?.modes ?? []) if (!modes.has(mode.id)) modes.set(mode.id, mode);
+  }
+  return {
+    models: presets.length ? presets.map((preset, index) => nativeModel(presetModel(preset), backends[index])) : [baseModel],
+    modes: [...modes.values()], thinkingOptions: primary?.thinking,
+    defaultModel: defaultModel.id,
+    defaultMode: primary?.defaultMode,
+    defaultThinkingOption: primary?.defaultThinking,
   };
 }
 
@@ -42,7 +68,7 @@ const supported = ["prompt.message", "prompt.image", "permission", "permission.t
 const historyLimit = 300;
 
 type Dependencies = {
-  getRouting(): Promise<Routing>;
+  getPresets(): Promise<Preset[]>;
   getPaseo(): PaseoApi | undefined;
 };
 
@@ -57,9 +83,10 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
     icon: "icon.svg",
     description: "Follow an ordered chain of models using your existing Paseo providers.",
     async getCatalogCacheKey(options) {
-      const routing = await dependencies.getRouting().catch(() => undefined);
+      const presets = await dependencies.getPresets().catch(() => []);
       return JSON.stringify({
-        primary: routing?.chain[0], ready: Boolean(dependencies.getPaseo()),
+        presets: presets.map((preset) => [preset.id, preset.name, primarySelection(preset)]),
+        ready: Boolean(dependencies.getPaseo()),
         cwd: options.scope === "workspace" ? options.cwd : undefined,
       });
     },
@@ -87,12 +114,8 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
             switch (input.type) {
               case "catalog": {
                 const paseo = dependencies.getPaseo();
-                const routing = await dependencies.getRouting().catch(() => undefined);
-                const chain = routing?.chain ?? [];
-                const primary = paseo && chain[0]
-                  ? await readControls(paseo, chain[0], input.cwd).catch(() => undefined)
-                  : undefined;
-                emit({ type: "catalog", requestId: input.requestId, catalog: catalog(primary) });
+                const presets = await dependencies.getPresets().catch(() => []);
+                emit({ type: "catalog", requestId: input.requestId, catalog: await catalog(presets, paseo, input.cwd) });
                 return;
               }
               case "session.open": {
@@ -162,7 +185,24 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
   };
 }
 
-type Turn = { id: string; stop: AbortController; done: Promise<void>; attemptId?: string };
+type Turn = {
+  id: string;
+  stop: AbortController;
+  done: Promise<void>;
+  attemptId?: string;
+  billing?: { id: string; resolve(allowed: boolean): void };
+  receipt: Omit<Receipt, "state">;
+  previousLimits?: unknown;
+  chain?: string[];
+};
+
+function step(turn: Turn, label: string, result: RouteStep["result"], resetAt?: number) {
+  if (turn.receipt.steps.length >= 40) {
+    turn.receipt.omitted++;
+  } else {
+    turn.receipt.steps.push({ label: label.slice(0, 240), result, resetAt });
+  }
+}
 
 class Session {
   private checkpoint;
@@ -170,6 +210,8 @@ class Session {
   private turn?: Turn;
   private backend?: BackendControls;
   private selected: Selection;
+  private modelId: string;
+  private models: ProviderModel[] = [baseModel];
   private configuring = false;
 
   constructor(
@@ -180,6 +222,7 @@ class Session {
     private emit: (event: ProviderEvent) => void,
   ) {
     this.checkpoint = createCheckpoint(owner);
+    this.modelId = config.model ?? defaultModel.id;
     this.selected = {
       mode: config.mode,
       thinking: config.thinkingOption,
@@ -190,8 +233,10 @@ class Session {
   async restore() {
     this.state = await this.checkpoint.read();
     const paseo = this.dependencies.getPaseo();
-    const routing = await this.dependencies.getRouting().catch(() => undefined);
-    const selection = this.state.lastSelection ?? this.state.worker?.selection ?? routing?.chain[0];
+    const presets = await this.dependencies.getPresets().catch(() => []);
+    this.models = presets.length ? presets.map(presetModel) : [baseModel];
+    const preset = presets.find(({ id }) => id === this.modelId);
+    const selection = this.state.lastSelection ?? this.state.worker?.selection ?? (preset && primarySelection(preset));
     if (paseo && selection) {
       this.backend = await readControls(paseo, selection, this.config.cwd, this.selected.options).catch(() => undefined);
       if (this.backend) {
@@ -203,11 +248,14 @@ class Session {
   }
 
   publishConfig() {
-    const visible = catalog(this.backend);
+    const models = this.models.some(({ id }) => id === this.modelId)
+      ? this.models : [...this.models, { id: this.modelId, label: this.modelId }];
     this.emit({
       type: "session.config", sessionId: this.id,
       config: {
-        model: model.id, models: visible.models, modes: visible.modes, thinkingOptions: visible.thinkingOptions ?? [],
+        model: this.modelId,
+        models: models.map((model) => model.id === this.modelId ? nativeModel(model, this.backend) : model),
+        modes: this.backend?.modes ?? [], thinkingOptions: this.backend?.thinking ?? [],
         mode: this.selected.mode ?? this.backend?.defaultMode,
         thinkingOption: this.selected.thinking ?? this.backend?.defaultThinking,
         controls: this.backend?.controls ?? [],
@@ -218,12 +266,19 @@ class Session {
 
   async configure(changes: ProviderConfigChanges) {
     if (this.turn || this.configuring) throw new Error("Wait for the active Cheapskate operation to finish.");
-    if (changes.model && changes.model !== model.id) throw new Error("Cheapskate only exposes its own model.");
     const paseo = this.requirePaseo();
     const backend = this.backend;
     if (!backend) throw new Error("Configure an available backend first.");
     this.configuring = true;
     try {
+      const modelId = changes.model ?? this.modelId;
+      if (modelId !== this.modelId) {
+        const presets = await this.dependencies.getPresets();
+        if (!presets.some(({ id, chain }) => id === modelId && parseChain(chain).length)) {
+          throw new Error("Choose a Cheapskate chain with at least one backend.");
+        }
+        this.models = presets.map(presetModel);
+      }
       const mode = changes.mode === undefined ? this.selected.mode : changes.mode ?? backend.defaultMode;
       const thinking = changes.thinkingOption === undefined
         ? this.selected.thinking
@@ -240,6 +295,7 @@ class Session {
         else options[key] = value;
       }
       const next = await readControls(paseo, backend.selection, this.config.cwd, options);
+      this.modelId = modelId;
       this.selected = { mode, thinking, options };
       this.backend = next;
       this.publishConfig();
@@ -285,7 +341,10 @@ class Session {
     });
     this.emit({ type: "session.turn", sessionId: this.id, turnId, state: "started" });
 
-    const turn: Turn = { id: turnId, stop, done: Promise.resolve() };
+    const turn: Turn = {
+      id: turnId, stop, done: Promise.resolve(),
+      receipt: { chain: this.models.find(({ id }) => id === this.modelId)?.label ?? this.modelId, steps: [], omitted: 0 },
+    };
     this.turn = turn;
     turn.done = this.run(turn, message).then(
       (state) => this.finish(turn, state),
@@ -302,6 +361,7 @@ class Session {
       error = toError(saveError);
       this.record({ type: "error", id: `checkpoint:${turn.id}`, message: error.message });
     } finally {
+      await this.publishReceipt(turn, state).catch(() => {});
       this.turn = undefined;
       this.emit({ type: "session.turn", sessionId: this.id, turnId: turn.id, state, error });
     }
@@ -314,11 +374,60 @@ class Session {
 
   async permission(input: Extract<ProviderInput, { type: "session.permission" }>) {
     const turn = this.turn;
+    if (turn?.billing?.id === input.permissionId) {
+      turn.billing.resolve(input.response.behavior === "allow" && input.response.selectedActionId === "run-once");
+      return;
+    }
     const worker = this.state.worker;
     const prefix = `${turn?.id}:${turn?.attemptId}:`;
     if (!turn?.attemptId || turn.stop.signal.aborted || !worker || !input.permissionId.startsWith(prefix)) return;
     const agent = this.requirePaseo().agents.ref(worker.id);
     await agent.respondToPermission({ requestId: input.permissionId.slice(prefix.length), response: input.response });
+  }
+
+  private async requestBilling(turn: Turn, label: string, knownPaid: boolean) {
+    const { signal } = turn.stop;
+    if (signal.aborted) return false;
+    const id = `${turn.id}:billing:${randomUUID()}`;
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    const abort = () => resolve(false);
+    turn.billing = { id, resolve };
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      this.emit({ type: "session.permission", sessionId: this.id, request: {
+        id, kind: "other", name: "cheapskate.billing", title: `Use ${label} for this message?`,
+        description: knownPaid ? "This backend is marked paid. Approve it for this message only."
+          : "Billing is unclassified. This backend may incur charges. Approve it for this message only.",
+        actions: [
+          { id: "run-once", label: "Use once", behavior: "allow", variant: "primary" },
+          { id: "skip", label: "Skip backend", behavior: "deny", variant: "secondary" },
+        ],
+      } });
+      return await promise;
+    } finally {
+      signal.removeEventListener("abort", abort);
+      turn.billing = undefined;
+      this.emit({ type: "session.permission_resolved", sessionId: this.id, permissionId: id });
+    }
+  }
+
+  private async publishReceipt(turn: Turn, state: Receipt["state"]) {
+    const owner = this.dependencies.getPaseo()?.agents.ref(this.owner);
+    if (!owner) return;
+    const resets = (turn.chain ?? []).flatMap((selection) => {
+      const reset = this.state.limits?.[selection];
+      return reset ? [[selection, reset] as const] : [];
+    });
+    const limits = Object.fromEntries(resets.slice(0, 40));
+    if (turn.previousLimits !== undefined && (Object.keys(limits).length || turn.previousLimits)
+      && !isDeepStrictEqual(limits, turn.previousLimits)) {
+      await owner.setMetadata({ [quotaResetsKey]: limits }).catch(() => {});
+    }
+    const receipt = receiptSchema.safeParse({ ...turn.receipt, state });
+    if (!receipt.success) return;
+    // The host stamps the installed plugin ID and keeps the row in canonical history.
+    const data = JSON.parse(JSON.stringify(receipt.data));
+    await owner.timeline.append({ type: "plugin", id: turn.id, kind: receiptKind, version: 1, data }).catch(() => {});
   }
 
   private async archiveWorker(paseo: PaseoApi) {
@@ -330,9 +439,22 @@ class Session {
 
   private async run(turn: Turn, message: ReturnType<typeof parseMessage>): Promise<"completed" | "canceled"> {
     const signal = turn.stop.signal;
-    const { chain, overload } = await this.dependencies.getRouting();
+    const presets = await this.dependencies.getPresets();
+    const preset = presets.find(({ id }) => id === this.modelId);
+    if (!preset) throw new Error("This Cheapskate chain was removed. Choose an available chain in the model picker.");
+    this.models = presets.map(presetModel);
+    const chain = parseChain(preset.chain);
+    turn.chain = chain;
+    const { overload } = preset;
+    turn.receipt.chain = preset.name;
     if (signal.aborted) return "canceled";
     if (!chain.length) throw new Error("Add a fallback chain in Settings → Plugins → Cheapskate.");
+    const eligible = chain.filter((selection) => billingDecision(preset.billing, preset.costs[selection]) !== "skip");
+    const primary = eligible[0];
+    if (!primary) {
+      for (const selection of chain) step(turn, selection, "billing");
+      throw new Error("This chain has no backends marked free. Update its billing settings to continue.");
+    }
 
     const paseo = this.requirePaseo();
     const ownerAgent = paseo.agents.ref(this.owner);
@@ -341,12 +463,21 @@ class Session {
     const workspace = paseo.workspaces.ref(owner.agent.workspaceId);
     const oldWorker = this.state.worker;
     const metadata = owner.agent.metadata ?? {};
+    turn.previousLimits = metadata[quotaResetsKey] ?? null;
+    const limits = this.state.limits ??= {};
+    const configured = new Set(presets.flatMap(({ chain }) => parseChain(chain)));
+    for (const selection of Object.keys(limits)) {
+      if (!configured.has(selection) && limits[selection].resetAt <= Date.now()) delete limits[selection];
+    }
     let publishedRoute = activeRoute.safeParse(metadata[activeRouteKey]).data;
     const primaryRequest = metadata[primaryRequestKey];
     const tryPrimary = typeof primaryRequest === "number" && primaryRequest !== metadata[handledPrimaryKey];
-    const initialSelection = !tryPrimary && oldWorker && chain.includes(oldWorker.selection) ? oldWorker.selection : chain[0];
+    const changedChain = (this.state.presetId ?? defaultModel.id) !== preset.id;
+    const active = oldWorker?.selection;
+    const canStay = !changedChain && active && billingDecision(preset.billing, preset.costs[active]) !== "skip";
+    const initialSelection = startingBackend(eligible, canStay ? active : undefined, limits, preset.autoReturn, tryPrimary, Date.now());
     const first = chain.indexOf(initialSelection);
-    const sourceSelection = this.state.lastSelection ?? oldWorker?.selection ?? initialSelection;
+    const sourceSelection = this.state.lastSelection ?? oldWorker?.selection ?? primary;
     const source = this.backend ?? await readControls(paseo, sourceSelection, this.config.cwd, this.selected.options);
     const intent = {
       mode: this.selected.mode ?? source.defaultMode,
@@ -354,22 +485,43 @@ class Session {
       options: { ...source.options, ...this.selected.options },
     };
     if (signal.aborted) return "canceled";
+    if (intent.mode && source.modes.length && !source.modes.some(({ id }) => id === intent.mode)) {
+      throw new Error(`Choose a permission mode offered by ${source.label}.`);
+    }
     if (tryPrimary) await ownerAgent.setMetadata({ [handledPrimaryKey]: primaryRequest }).catch(() => {});
     let change: RouteChange | undefined;
     if (oldWorker && initialSelection !== oldWorker.selection) {
-      change = { reason: tryPrimary ? "requested" : "removed", from: this.backend?.label ?? oldWorker.selection };
+      const reason = tryPrimary ? "requested" : changedChain ? "chain" : !chain.includes(oldWorker.selection) ? "removed"
+        : canStay ? "recovered" : "billing";
+      change = { reason, from: this.backend?.label ?? oldWorker.selection };
     }
     if (oldWorker?.inFlight) await this.archiveWorker(paseo);
 
     let failure: ProviderError | undefined;
     for (const [index, selection] of chain.entries()) {
-      if (index < first) continue;
       if (signal.aborted) return "canceled";
+      const cost = preset.costs[selection];
+      const decision = billingDecision(preset.billing, cost);
+      if (decision === "skip") {
+        step(turn, selection, "billing");
+        change ??= { reason: "billing", from: selection };
+        continue;
+      }
+      const limit = limits[selection];
+      if (limit && limit.resetAt > Date.now()) {
+        step(turn, limit.label, "cooldown", limit.resetAt);
+        continue;
+      }
+      if (index < first) {
+        step(turn, selection, "sticky");
+        continue;
+      }
 
       let backend: BackendControls;
       try {
         backend = selection === source.selection ? source : await readControls(paseo, selection, this.config.cwd);
       } catch (error) {
+        step(turn, selection, "unavailable");
         if (!change || change.reason === "requested" || change.reason === "removed") {
           change = { reason: "unavailable", from: selection };
         }
@@ -383,6 +535,7 @@ class Session {
         ? { mode: intent.mode, options: intent.options }
         : routePermissions(intent.mode, source, backend, intent.options);
       if (!permissions) {
+        step(turn, backend.label, "permissions");
         if (!change || change.reason === "requested" || change.reason === "removed") {
           change = { reason: "permissions", from: backend.label };
         }
@@ -390,6 +543,11 @@ class Session {
           type: "notification", id: `permission-skip:${turn.id}:${index}`, level: "warning",
           message: `Skipped ${selection} because it cannot preserve this permission mode or policy.`,
         });
+        continue;
+      }
+      if (decision === "ask" && !await this.requestBilling(turn, backend.label, cost === "paid")) {
+        step(turn, backend.label, signal.aborted ? "canceled" : "declined");
+        change ??= { reason: "billing", from: backend.label };
         continue;
       }
       const { mode, options } = permissions;
@@ -409,6 +567,8 @@ class Session {
       const attemptId = randomUUID();
       turn.attemptId = attemptId;
       this.state.worker = worker;
+      this.state.presetId = preset.id;
+      delete limits[selection];
       worker.inFlight = true;
       await this.save();
 
@@ -490,6 +650,18 @@ class Session {
           }
           if (!signal.aborted) {
             worker.inFlight = false;
+            const latestUsage = updated ? agent.lastUsage ?? undefined : undefined;
+            // Paseo keeps the last snapshot even when the provider is silent on a later turn.
+            // Only attribute snapshot usage when a fresh worker or a changed snapshot identifies it.
+            const snapshotUsage = !existing || (worker.lastUsage !== undefined && !isDeepStrictEqual(worker.lastUsage, latestUsage ?? null))
+              ? latestUsage : undefined;
+            if (updated) worker.lastUsage = latestUsage ?? null;
+            if (!outcome.usage && snapshotUsage) {
+              this.emit({ type: "session.usage", sessionId: this.id, turnId: turn.id, usage: snapshotUsage });
+            }
+            step(turn, backend.label, "answered");
+            turn.receipt.answer = backend.label.slice(0, 240);
+            turn.receipt.usage = outcome.usage ?? snapshotUsage;
             return "completed";
           }
         }
@@ -499,10 +671,17 @@ class Session {
       }
 
       await this.archiveWorker(paseo);
-      if (signal.aborted || failure.code === "canceled") return "canceled";
+      if (signal.aborted || failure.code === "canceled") {
+        step(turn, backend.label, "canceled");
+        return "canceled";
+      }
       if (!canFallback(failure, overload)) {
+        step(turn, backend.label, "failed");
         throw new Error(`${selection}: ${failure.message}`);
       }
+      const resetAt = providerResetAt(failure, Date.now());
+      if (resetAt !== undefined) limits[selection] = { resetAt, label: backend.label.slice(0, 240) };
+      step(turn, backend.label, "limit", resetAt);
       change = { reason: "limit", from: backend.label };
       if (index + 1 < chain.length) {
         this.record({
@@ -511,9 +690,10 @@ class Session {
         });
       }
     }
+    if (signal.aborted) return "canceled";
     throw new Error(failure
       ? `No compatible backend remains after the provider limit: ${failure.message}`
-      : "No configured backend can preserve this permission mode or policy.");
+      : "No configured backend can run this message. Open the routing receipt for details.");
   }
 }
 

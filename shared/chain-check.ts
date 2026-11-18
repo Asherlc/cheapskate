@@ -1,10 +1,10 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
-import { preferences } from "./settings";
+import { chainSettings } from "./settings";
 
 export const checkChain = defineRpc({
   name: "routing.check-chain",
-  input: preferences.schema.pick({ chain: true }),
+  input: chainSettings.pick({ chain: true }),
   output: z.object({
     defaultMode: z.string(),
     modes: z.array(z.object({ id: z.string(), label: z.string() })),
