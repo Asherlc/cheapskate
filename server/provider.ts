@@ -14,13 +14,13 @@ import {
   type ProviderSessionConfig,
   type ProviderTimelineItem,
 } from "@getpaseo/plugin/server/provider";
-import { billingDecision, defaultModel, parseChain, primarySelection, providerId, type Preset } from "../shared/settings";
-import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, quotaResetsKey, type RouteChange } from "../shared/route-status";
-import { receiptKind, receiptSchema, type Receipt, type RouteStep } from "../shared/receipt";
-import { parseMessage, runBackend, type PaseoApi } from "./backend";
-import { createCheckpoint, type Checkpoint } from "./checkpoint";
-import { closestThinking, readControls, routePermissions, type BackendControls, type Options } from "./controls";
-import { canFallback, handoffPrompt, providerResetAt, startingBackend } from "./routing";
+import { billingDecision, defaultModel, parseChain, primarySelection, providerId, type Preset } from "../shared/settings.ts";
+import { activeRoute, activeRouteKey, handledPrimaryKey, primaryRequestKey, quotaResetsKey, type RouteChange } from "../shared/route-status.ts";
+import { receiptKind, receiptSchema, type Receipt, type RouteStep } from "../shared/receipt.ts";
+import { parseMessage, runBackend, type PaseoApi } from "./backend.ts";
+import { createCheckpoint, type Checkpoint } from "./checkpoint.ts";
+import { closestThinking, readControls, routePermissions, type BackendControls, type Options } from "./controls.ts";
+import { canFallback, handoffPrompt, providerResetAt, startingBackend } from "./routing.ts";
 
 export const ownerEnvKey = "CHEAPSKATE_OWNER_AGENT_ID";
 const baseModel = { id: defaultModel.id, label: defaultModel.name, isDefault: true };
@@ -72,6 +72,31 @@ type Dependencies = {
   getPaseo(): PaseoApi | undefined;
 };
 
+async function profileConfig(config: ProviderSessionConfig, dependencies: Dependencies) {
+  const model = config.model ?? defaultModel.id;
+  const presets = await dependencies.getPresets();
+  const preset = presets.find(({ id }) => id === model);
+  const selection = preset && primarySelection(preset);
+  const paseo = dependencies.getPaseo();
+  const options = { ...config.providerOptions } as Options;
+  const backend = paseo && selection
+    ? await readControls(paseo, selection, config.cwd, options).catch(() => undefined)
+    : undefined;
+  return {
+    model,
+    models: presets.map(presetModel),
+    mode: config.mode ?? backend?.defaultMode,
+    thinkingOption: config.thinkingOption ?? backend?.defaultThinking,
+    modes: backend?.modes ?? [],
+    thinkingOptions: backend?.thinking ?? [],
+    // Paseo can ask for profile controls before any hook or RPC has supplied the SDK.
+    controls: backend?.controls ?? (selection?.startsWith("opencode/")
+      ? [{ type: "toggle" as const, key: "auto_accept", label: "Auto-accept", defaultValue: false }]
+      : []),
+    providerOptions: { ...backend?.options, ...options },
+  };
+}
+
 function toError(error: unknown): ProviderError {
   return { message: error instanceof Error ? error.message : String(error) };
 }
@@ -120,20 +145,26 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
               }
               case "session.open": {
                 const owner = input.config.env[ownerEnvKey];
-                if (!owner) throw new Error("Paseo did not supply the owner of this Cheapskate session.");
+                if (!owner && (input.persistence || input.history !== "skip")) {
+                  throw new Error("Paseo did not supply the owner of this Cheapskate session.");
+                }
                 if (input.persistence && (input.persistence.version !== 1 || input.persistence.data !== owner)) {
                   throw new Error("Cheapskate session history belongs to another agent.");
                 }
-                const session = new Session(input.sessionId, owner, input.config, dependencies, emit);
-                await session.restore();
-                sessions.set(input.sessionId, session);
+                const session = owner ? new Session(input.sessionId, owner, input.config, dependencies, emit) : undefined;
+                const preview = session ? undefined : await profileConfig(input.config, dependencies);
+                if (session) {
+                  await session.restore();
+                  sessions.set(input.sessionId, session);
+                }
                 emit({
                   type: "session.opened", requestId: input.requestId, sessionId: input.sessionId,
                   capabilities, cwd: input.config.cwd, restoration: "core",
-                  persistence: input.config.persist ? { version: 1, data: owner } : undefined,
+                  persistence: owner && input.config.persist ? { version: 1, data: owner } : undefined,
                 });
-                session.publishConfig();
-                if (input.history === "replay") session.replay();
+                if (preview) emit({ type: "session.config", sessionId: input.sessionId, config: preview });
+                session?.publishConfig();
+                if (input.history === "replay") session?.replay();
                 emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
                 return;
               }
@@ -150,7 +181,7 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
                 await getSession(input).interrupt();
                 break;
               case "session.close":
-                await getSession(input).interrupt();
+                await sessions.get(input.sessionId)?.interrupt();
                 sessions.delete(input.sessionId);
                 emit({ type: "session.closed", sessionId: input.sessionId });
                 break;
@@ -205,6 +236,11 @@ function step(turn: Turn, label: string, result: RouteStep["result"], resetAt?: 
 }
 
 class Session {
+  private id: string;
+  private owner: string;
+  private config: ProviderSessionConfig;
+  private dependencies: Dependencies;
+  private emit: (event: ProviderEvent) => void;
   private checkpoint;
   private state: Checkpoint = { items: [] };
   private turn?: Turn;
@@ -215,12 +251,17 @@ class Session {
   private configuring = false;
 
   constructor(
-    private id: string,
-    private owner: string,
-    private config: ProviderSessionConfig,
-    private dependencies: Dependencies,
-    private emit: (event: ProviderEvent) => void,
+    id: string,
+    owner: string,
+    config: ProviderSessionConfig,
+    dependencies: Dependencies,
+    emit: (event: ProviderEvent) => void,
   ) {
+    this.id = id;
+    this.owner = owner;
+    this.config = config;
+    this.dependencies = dependencies;
+    this.emit = emit;
     this.checkpoint = createCheckpoint(owner);
     this.modelId = config.model ?? defaultModel.id;
     this.selected = {
