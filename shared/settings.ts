@@ -18,7 +18,7 @@ export const preferences = defineSettings({
         (entry) => !/^[a-z][a-z0-9-]*\/\S+$/.test(entry) || entry.startsWith(providerId + "/"),
       );
       if (invalid) {
-        context.addIssue({ code: "custom", message: "Enter one provider/model per line. Cheapskate cannot route to itself." });
+        context.addIssue({ code: "custom", message: "Choose a provider and model for every entry. Cheapskate cannot route to itself." });
       } else if (new Set(chain).size !== chain.length) {
         context.addIssue({ code: "custom", message: "Each provider/model can appear only once." });
       }

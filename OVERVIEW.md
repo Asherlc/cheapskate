@@ -2,7 +2,7 @@ Cheapskate adds a model to Paseo's regular picker. The model runs on an ordered 
 
 ## Setup
 
-Requires Paseo 0.16.1 or later. Open Settings → Plugins → Cheapskate and enter one provider/model ID per line. Each backend uses the accounts and defaults already configured for that provider. You can opt in to switching on provider overload.
+Requires Paseo 0.16.1 or later. Open Settings → Plugins → Cheapskate and choose a provider and model for each entry in your fallback chain. Each backend uses the accounts and defaults already configured for that provider. You can opt in to switching on provider overload.
 
 ## Routing and chat history
 

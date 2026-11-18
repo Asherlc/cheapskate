@@ -4,13 +4,13 @@ Select **Cheapskate** as your provider and model, or use `cheapskate/cheapskate`
 
 ## Install and configure
 
-Requires Paseo 0.16.1 or newer. Enable plugins in Paseo, then install the tagged release from your daemon host.
+Requires Paseo 0.16.1 or newer. Enable plugins in Paseo, then install from GitHub on your daemon host.
 
 ```sh
-paseo plugin install git:Asherlc/cheapskate --ref v0.1.1
+paseo plugin install git:Asherlc/cheapskate
 ```
 
-Open **Settings → Plugins → Cheapskate** on that host. Add one backend per line in `provider/model` format and save. Use `paseo provider ls` and `paseo provider models <provider>` to find the exact IDs. Keep any slash already in a model ID. For example, if the OpenCode model ID is `vendor/example`, enter `opencode/vendor/example`. The chain starts empty. Its order controls which accounts and models can be used.
+Open **Settings → Plugins → Cheapskate** on that host. Select **Add backend**, choose a provider and a model, then arrange the entries in the order Cheapskate should try them. Save to apply the chain. The pickers use that host’s catalog. If a saved provider or model becomes unavailable, its entry stays in the chain until you replace or remove it.
 
 ## Composer controls
 
