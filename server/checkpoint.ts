@@ -4,8 +4,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderTimelineItem } from "@getpaseo/plugin/server/provider";
 
-export type WorkerState = { id: string; selection: string; inFlight: boolean };
-export type Checkpoint = { items: ProviderTimelineItem[]; worker?: WorkerState };
+import type { Options } from "./controls";
+
+export type WorkerState = {
+  id: string;
+  selection: string;
+  inFlight: boolean;
+  config?: { mode?: string; thinking?: string; options: Options };
+};
+export type Checkpoint = { items: ProviderTimelineItem[]; worker?: WorkerState; lastSelection?: string };
 
 export function createCheckpoint(owner: string) {
   const root = join(process.env.PASEO_HOME || join(homedir(), ".paseo"), "plugin-data", "cheapskate");

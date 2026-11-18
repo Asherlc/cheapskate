@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { PaseoApi } from "@getpaseo/client";
 import {
   PROVIDER_PROTOCOL_VERSION,
   negotiateProviderCapabilities,
+  type ProviderCatalog,
+  type ProviderConfigChanges,
   type ProviderError,
   type ProviderEvent,
   type ProviderInput,
@@ -14,17 +17,33 @@ import {
 import { providerId } from "../shared/settings";
 import { parseMessage, runBackend } from "./backend";
 import { createCheckpoint, type Checkpoint } from "./checkpoint";
+import { closestMode, closestThinking, fallbackOptions, readControls, type BackendControls, type Options } from "./controls";
 import { canFallback, handoffPrompt, type Routing } from "./routing";
 
 export const ownerEnvKey = "CHEAPSKATE_OWNER_AGENT_ID";
 const model = { id: "cheapskate", label: "Cheapskate", isDefault: true };
-const models = [model];
-const supported = ["prompt.message", "prompt.image", "permission", "permission.tool_policy", "session.persistence"];
+const defaultCatalog: ProviderCatalog = { models: [model], modes: [], defaultModel: model.id };
+
+function catalog(backend?: BackendControls): ProviderCatalog {
+  if (!backend) return defaultCatalog;
+  return {
+    models: [{ ...model, thinkingOptions: [...backend.thinking], defaultThinkingOptionId: backend.defaultThinking }],
+    modes: backend.modes,
+    thinkingOptions: backend.thinking,
+    defaultModel: model.id,
+    defaultMode: backend.defaultMode,
+    defaultThinkingOption: backend.defaultThinking,
+  };
+}
+
+type Selection = { mode?: string; thinking?: string; options: Options };
+
+const supported = ["prompt.message", "prompt.image", "permission", "permission.tool_policy", "session.configure", "session.persistence"];
 const historyLimit = 300;
 
 type Dependencies = {
   getRouting(): Promise<Routing>;
-  getPaseo(): PaseoApi;
+  getPaseo(): PaseoApi | undefined;
 };
 
 function toError(error: unknown): ProviderError {
@@ -37,6 +56,13 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
     label: "Cheapskate",
     icon: "icon.svg",
     description: "Follow an ordered chain of models using your existing Paseo providers.",
+    async getCatalogCacheKey(options) {
+      const routing = await dependencies.getRouting().catch(() => undefined);
+      return JSON.stringify({
+        primary: routing?.chain[0], ready: Boolean(dependencies.getPaseo()),
+        cwd: options.scope === "workspace" ? options.cwd : undefined,
+      });
+    },
     async connect(request) {
       if (!request.versions.includes(PROVIDER_PROTOCOL_VERSION)) throw new Error("Unsupported Paseo provider protocol.");
       const capabilities = negotiateProviderCapabilities(request.capabilities, supported);
@@ -59,9 +85,16 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
         async send(input) {
           try {
             switch (input.type) {
-              case "catalog":
-                emit({ type: "catalog", requestId: input.requestId, catalog: { models, modes: [], defaultModel: model.id } });
+              case "catalog": {
+                const paseo = dependencies.getPaseo();
+                const routing = await dependencies.getRouting().catch(() => undefined);
+                const chain = routing?.chain ?? [];
+                const primary = paseo && chain[0]
+                  ? await readControls(paseo, chain[0], input.cwd).catch(() => undefined)
+                  : undefined;
+                emit({ type: "catalog", requestId: input.requestId, catalog: catalog(primary) });
                 return;
+              }
               case "session.open": {
                 const owner = input.config.env[ownerEnvKey];
                 if (!owner) throw new Error("Paseo did not supply the owner of this Cheapskate session.");
@@ -76,10 +109,7 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
                   capabilities, cwd: input.config.cwd, restoration: "core",
                   persistence: input.config.persist ? { version: 1, data: owner } : undefined,
                 });
-                emit({
-                  type: "session.config", sessionId: input.sessionId,
-                  config: { model: model.id, models, modes: [], thinkingOptions: [] },
-                });
+                session.publishConfig();
                 if (input.history === "replay") session.replay();
                 emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
                 return;
@@ -90,6 +120,9 @@ export function createProvider(dependencies: Dependencies): ProviderRegistration
               case "session.permission":
                 await getSession(input).permission(input);
                 return;
+              case "session.configure":
+                await getSession(input).configure(input.changes);
+                break;
               case "session.interrupt":
                 await getSession(input).interrupt();
                 break;
@@ -135,6 +168,9 @@ class Session {
   private checkpoint;
   private state: Checkpoint = { items: [] };
   private turn?: Turn;
+  private backend?: BackendControls;
+  private selected: Selection;
+  private configuring = false;
 
   constructor(
     private id: string,
@@ -144,10 +180,78 @@ class Session {
     private emit: (event: ProviderEvent) => void,
   ) {
     this.checkpoint = createCheckpoint(owner);
+    this.selected = {
+      mode: config.mode,
+      thinking: config.thinkingOption,
+      options: { ...config.providerOptions } as Options,
+    };
   }
 
   async restore() {
     this.state = await this.checkpoint.read();
+    const paseo = this.dependencies.getPaseo();
+    const routing = await this.dependencies.getRouting().catch(() => undefined);
+    const selection = this.state.lastSelection ?? this.state.worker?.selection ?? routing?.chain[0];
+    if (paseo && selection) {
+      this.backend = await readControls(paseo, selection, this.config.cwd, this.selected.options).catch(() => undefined);
+      if (this.backend) {
+        const { modes, thinking } = this.backend;
+        if (this.selected.mode === "default" && !modes.some(({ id }) => id === "default")) this.selected.mode = undefined;
+        if (this.selected.thinking === "auto" && !thinking.some(({ id }) => id === "auto")) this.selected.thinking = undefined;
+      }
+    }
+  }
+
+  publishConfig() {
+    const visible = catalog(this.backend);
+    this.emit({
+      type: "session.config", sessionId: this.id,
+      config: {
+        model: model.id, models: visible.models, modes: visible.modes, thinkingOptions: visible.thinkingOptions ?? [],
+        mode: this.selected.mode ?? this.backend?.defaultMode,
+        thinkingOption: this.selected.thinking ?? this.backend?.defaultThinking,
+        controls: this.backend?.controls ?? [],
+        providerOptions: { ...this.backend?.options, ...this.selected.options },
+      },
+    });
+  }
+
+  async configure(changes: ProviderConfigChanges) {
+    if (this.turn || this.configuring) throw new Error("Wait for the active Cheapskate operation to finish.");
+    if (changes.model && changes.model !== model.id) throw new Error("Cheapskate only exposes its own model.");
+    const paseo = this.requirePaseo();
+    const backend = this.backend;
+    if (!backend) throw new Error("Configure an available backend first.");
+    this.configuring = true;
+    try {
+      const mode = changes.mode === undefined ? this.selected.mode : changes.mode ?? backend.defaultMode;
+      const thinking = changes.thinkingOption === undefined
+        ? this.selected.thinking
+        : changes.thinkingOption ?? backend.defaultThinking;
+      if (changes.mode && !backend.modes.some(({ id }) => id === mode)) {
+        throw new Error(`The current backend does not offer permission mode ${mode}.`);
+      }
+      if (changes.thinkingOption && !backend.thinking.some(({ id }) => id === thinking)) {
+        throw new Error(`The current backend does not offer thinking level ${thinking}.`);
+      }
+      const options = { ...this.selected.options };
+      for (const [key, value] of Object.entries(changes.providerOptions ?? changes.settings ?? {})) {
+        if (value === null) delete options[key];
+        else options[key] = value;
+      }
+      const next = await readControls(paseo, backend.selection, this.config.cwd, options);
+      this.selected = { mode, thinking, options };
+      this.backend = next;
+      this.publishConfig();
+    } finally {
+      this.configuring = false;
+    }
+  }
+
+  private requirePaseo() {
+    const paseo = this.dependencies.getPaseo();
+    if (!paseo) throw new Error("Cheapskate could not connect to its Paseo host.");
+    return paseo;
   }
 
   replay() {
@@ -167,7 +271,7 @@ class Session {
   }
 
   prompt(prompt: ProviderPrompt) {
-    if (this.turn) throw new Error("Cheapskate is still handling the previous turn.");
+    if (this.turn || this.configuring) throw new Error("Cheapskate is still handling the previous operation.");
     if (prompt.input.type !== "message" || prompt.delivery === "steer") {
       throw new Error("Cheapskate supports regular messages.");
     }
@@ -213,7 +317,7 @@ class Session {
     const worker = this.state.worker;
     const prefix = `${turn?.id}:${turn?.attemptId}:`;
     if (!turn?.attemptId || turn.stop.signal.aborted || !worker || !input.permissionId.startsWith(prefix)) return;
-    const agent = this.dependencies.getPaseo().agents.ref(worker.id);
+    const agent = this.requirePaseo().agents.ref(worker.id);
     await agent.respondToPermission({ requestId: input.permissionId.slice(prefix.length), response: input.response });
   }
 
@@ -230,28 +334,67 @@ class Session {
     if (signal.aborted) return "canceled";
     if (!chain.length) throw new Error("Add a fallback chain in Settings → Plugins → Cheapskate.");
 
-    const paseo = this.dependencies.getPaseo();
+    const paseo = this.requirePaseo();
     const owner = await paseo.agents.ref(this.owner).refresh();
     if (!owner?.agent.workspaceId) throw new Error("Cheapskate needs an active Paseo workspace.");
     const workspace = paseo.workspaces.ref(owner.agent.workspaceId);
-    if (this.state.worker?.inFlight || (this.state.worker && !chain.includes(this.state.worker.selection))) {
+    const oldWorker = this.state.worker;
+    const initialSelection = oldWorker && chain.includes(oldWorker.selection) ? oldWorker.selection : chain[0];
+    const first = chain.indexOf(initialSelection);
+    const sourceSelection = this.state.lastSelection ?? oldWorker?.selection ?? initialSelection;
+    const source = this.backend ?? await readControls(paseo, sourceSelection, this.config.cwd, this.selected.options);
+    const intent = {
+      mode: this.selected.mode ?? source.defaultMode,
+      thinking: this.selected.thinking ?? source.defaultThinking,
+      options: { ...source.options, ...this.selected.options },
+    };
+    if (oldWorker?.inFlight || (oldWorker && oldWorker.selection !== initialSelection)) {
       await this.archiveWorker(paseo);
     }
 
-    const first = this.state.worker ? chain.indexOf(this.state.worker.selection) : 0;
+    let failure: ProviderError | undefined;
     for (const [index, selection] of chain.entries()) {
       if (index < first) continue;
       if (signal.aborted) return "canceled";
 
+      let backend: BackendControls;
+      try {
+        backend = selection === source.selection ? source : await readControls(paseo, selection, this.config.cwd);
+      } catch (error) {
+        this.record({
+          type: "notification", id: `backend-skip:${turn.id}:${index}`, level: "warning",
+          message: `Skipped ${selection} because Paseo could not read its controls: ${toError(error).message}`,
+        });
+        continue;
+      }
+      const mode = selection === source.selection ? intent.mode : closestMode(intent.mode, source, backend);
+      const options = selection === source.selection
+        ? intent.options : fallbackOptions(source, backend, intent.options, mode ?? undefined);
+      if (mode === null || options === null) {
+        this.record({
+          type: "notification", id: `permission-skip:${turn.id}:${index}`, level: "warning",
+          message: `Skipped ${selection} because it cannot preserve this permission mode or policy.`,
+        });
+        continue;
+      }
+      const thinking = closestThinking(intent.thinking, backend.thinking) ?? backend.defaultThinking;
+      const requested: Selection = {
+        ...(mode ? { mode } : {}),
+        ...(thinking ? { thinking } : {}),
+        options,
+      };
+      if (this.state.worker && !isDeepStrictEqual(this.state.worker.config, requested)) {
+        await this.archiveWorker(paseo);
+      }
+      if (signal.aborted) return "canceled";
       const existing = this.state.worker;
-      const worker = existing ?? { id: randomUUID(), selection, inFlight: false };
+      const worker = existing ?? { id: randomUUID(), selection, inFlight: false, config: requested };
       const attemptId = randomUUID();
       turn.attemptId = attemptId;
       this.state.worker = worker;
       worker.inFlight = true;
       await this.save();
 
-      let failure: ProviderError;
       try {
         // The daemon and its plugins supply the new backend's own identity and thread storage.
         const {
@@ -272,6 +415,9 @@ class Session {
           labels: { "cheapskate.owner": this.owner },
           config: {
             provider: selection,
+            modeId: mode,
+            thinkingOptionId: thinking,
+            options,
             systemPrompt: this.config.systemPrompt,
             mcpServers,
             toolPolicy: this.config.toolPolicy,
@@ -279,8 +425,24 @@ class Session {
         });
         if (agent.id !== worker.id) throw new Error("Paseo did not honor the requested backend agent ID.");
 
-        if (!existing && index === first) {
-          this.record({ type: "notification", id: `route:${turn.id}:${attemptId}`, level: "info", message: `Cheapskate is using ${selection}.` });
+        const actualMode = agent.runtimeInfo?.modeId ?? undefined;
+        if (mode && actualMode && mode !== actualMode) {
+          throw new Error(`The backend opened in mode ${actualMode} instead of ${mode}.`);
+        }
+        if (!mode && actualMode) {
+          requested.mode = actualMode;
+          if (selection === source.selection) intent.mode = actualMode;
+        }
+        this.backend = { ...backend, controls: agent.controls ?? backend.controls };
+        this.state.lastSelection = selection;
+        this.selected = requested;
+        this.publishConfig();
+        if (!existing) {
+          const settings = [mode && `mode ${mode}`, thinking && `thinking ${thinking}`].filter(Boolean).join(", ");
+          this.record({
+            type: "notification", id: `route:${turn.id}:${attemptId}`, level: "info",
+            message: `Cheapskate is using ${selection}${settings ? ` (${settings})` : ""}.`,
+          });
         }
         const prompt = existing ? message : {
           ...message,
@@ -291,8 +453,21 @@ class Session {
           emit: (event) => event.type === "timeline.item" ? this.record(event.item) : this.emit(event),
         });
         if (outcome.state === "completed" && !signal.aborted) {
-          worker.inFlight = false;
-          return "completed";
+          const updated = await agent.refresh().catch(() => null);
+          if (updated) {
+            const liveMode = agent.runtimeInfo?.modeId;
+            const liveThinking = agent.runtimeInfo?.thinkingOptionId;
+            if (liveMode) requested.mode = liveMode;
+            if (liveThinking) requested.thinking = liveThinking;
+            requested.options = { ...requested.options, ...agent.options as Options };
+            this.backend = { ...backend, controls: agent.controls ?? backend.controls };
+            this.selected = requested;
+            this.publishConfig();
+          }
+          if (!signal.aborted) {
+            worker.inFlight = false;
+            return "completed";
+          }
         }
         failure = outcome.state === "failed" ? outcome.error : { message: "Backend canceled the turn.", code: "canceled" };
       } catch (error) {
@@ -301,15 +476,19 @@ class Session {
 
       await this.archiveWorker(paseo);
       if (signal.aborted || failure.code === "canceled") return "canceled";
-      if (index === chain.length - 1 || !canFallback(failure, overload)) {
+      if (!canFallback(failure, overload)) {
         throw new Error(`${selection}: ${failure.message}`);
       }
-      this.record({
-        type: "notification", id: `fallback:${turn.id}:${attemptId}`, level: "warning",
-        message: `${selection} hit a provider limit. Trying ${chain[index + 1]}.`,
-      });
+      if (index + 1 < chain.length) {
+        this.record({
+          type: "notification", id: `fallback:${turn.id}:${attemptId}`, level: "warning",
+          message: `${selection} hit a provider limit. Looking for the next compatible backend.`,
+        });
+      }
     }
-    throw new Error("Cheapskate has no configured backend left to try.");
+    throw new Error(failure
+      ? `No compatible backend remains after the provider limit: ${failure.message}`
+      : "No configured backend can preserve this permission mode or policy.");
   }
 }
 

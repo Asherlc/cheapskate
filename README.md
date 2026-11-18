@@ -12,6 +12,12 @@ paseo plugin install "$PWD"
 
 Open **Settings → Plugins → Cheapskate** on that host. Add one backend per line in `provider/model` format and save. Use `paseo provider ls` and `paseo provider models <provider>` to find the exact IDs. Keep any slash already in a model ID. For example, if the OpenCode model ID is `vendor/example`, enter `opencode/vendor/example`. The chain starts empty. Its order controls which accounts and models can be used.
 
+## Composer controls
+
+Cheapskate shows the primary backend's thinking levels, permission modes, and provider controls in a draft. A running chat shows the controls of its active backend. Changes apply to the next turn. If changing a setting requires a new backing session, Cheapskate passes it the recent context and continues in the same chat.
+
+On failover, Cheapskate uses the nearest available thinking level and a known equivalent or stricter permission mode. It skips a backend whose policy cannot preserve the selected restrictions. The timeline shows the backend and settings selected for the attempt. After a plugin reload, opening a Cheapskate draft populates the catalog used by CLI commands that specify a mode.
+
 ## What happens when a model fails
 
 Cheapskate switches on quota and rate-limit failures. You can opt in to switching on provider overload. Ordinary errors stop the turn and surface in the chat. Each backend is tried once in a turn. A successful backend handles subsequent turns until it fails or is removed from the chain. Settings changes take effect on the next turn.
