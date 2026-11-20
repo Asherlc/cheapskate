@@ -31,10 +31,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Asherlc/cheapskate.git"
+    "url": "git+https://github.com/Asherlc/paseo-plugins.git",
+    "directory": "plugins/cheapskate"
   },
-  "homepage": "https://github.com/Asherlc/cheapskate",
+  "homepage": "https://github.com/Asherlc/paseo-plugins/tree/main/plugins/cheapskate",
   "bugs": {
-    "url": "https://github.com/Asherlc/cheapskate/issues"
+    "url": "https://github.com/Asherlc/paseo-plugins/issues"
   }
 }

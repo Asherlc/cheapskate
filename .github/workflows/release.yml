@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+    paths:
+      - 'plugins/cheapskate/**'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
@@ -22,10 +25,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: plugins/cheapskate/package-lock.json
       - run: npm ci --ignore-scripts
+        working-directory: plugins/cheapskate
       - run: npm run typecheck
+        working-directory: plugins/cheapskate
       - run: npm test
+        working-directory: plugins/cheapskate
       - run: npm pack --dry-run --ignore-scripts
+        working-directory: plugins/cheapskate
 
   release:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -51,15 +59,15 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          tag=$(npm version patch --no-git-tag-version --ignore-scripts)
+          tag=$(npm version patch --prefix plugins/cheapskate --no-git-tag-version --ignore-scripts)
 
           if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
             # A retry must reuse this run's release, never an unrelated version.
             commit=$(git rev-parse "$tag^{commit}")
             test "$(git rev-parse "$commit^")" = "$GITHUB_SHA"
-            git diff --exit-code "$commit" -- package.json package-lock.json
+            git diff --exit-code "$commit" -- plugins/cheapskate/package.json plugins/cheapskate/package-lock.json
           else
-            git add package.json package-lock.json
+            git add plugins/cheapskate/package.json plugins/cheapskate/package-lock.json
             git commit -m "chore: release $tag [skip ci]"
             commit=$(git rev-parse HEAD)
             git tag "$tag"
@@ -103,7 +111,7 @@ jobs:
           cat > "$RUNNER_TEMP/submission.md" <<EOF
           ### Source
 
-          https://github.com/$SOURCE_REPO/tree/$RELEASE_COMMIT
+          https://github.com/$SOURCE_REPO/tree/$RELEASE_COMMIT/plugins/cheapskate
 
           Update the existing asherlc/cheapskate listing to $RELEASE_TAG.
           Release: https://github.com/$SOURCE_REPO/releases/tag/$RELEASE_TAG
@@ -112,10 +120,10 @@ jobs:
           The release commit changes only the package version and lockfile.
 
           Settings screenshot:
-          https://raw.githubusercontent.com/$SOURCE_REPO/$RELEASE_COMMIT/assets/settings.png
+          https://raw.githubusercontent.com/$SOURCE_REPO/$RELEASE_COMMIT/plugins/cheapskate/assets/settings.png
 
           Fallback screenshot (simulated quota failure):
-          https://raw.githubusercontent.com/$SOURCE_REPO/$RELEASE_COMMIT/assets/fallback.png
+          https://raw.githubusercontent.com/$SOURCE_REPO/$RELEASE_COMMIT/plugins/cheapskate/assets/fallback.png
 
           ### Categories
 

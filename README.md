@@ -1,77 +1,31 @@
-# Cheapskate for Paseo
+# Paseo plug-ins
 
-Select **Cheapskate** as your provider and model, or use `cheapskate/cheapskate` in the CLI. The chat stays on that model while Cheapskate uses your existing Paseo providers in the order you configure.
+A collection of [Paseo](https://paseo.sh) plug-ins. Each package is independent, with its own manifest, version, docs, and release. Install only the ones you want.
 
-## Install and configure
+## Packages
 
-Requires Paseo 0.16.1 or newer. Enable plugins in Paseo, then install from GitHub on your daemon host.
+### Cheapskate
 
-```sh
-paseo plugin install git:Asherlc/cheapskate
-```
+One selectable Paseo model backed by an ordered fallback chain. When a backend hits a quota or rate limit, Cheapskate continues in the same chat with the next model.
 
-Open **Settings → Plugins → Cheapskate** on that host. Select **Add backend**, choose a provider and a model, then arrange the entries in the order Cheapskate should try them. Save to apply the chain. The pickers use that host’s catalog. If a saved provider or model becomes unavailable, its entry stays in the chain until you replace or remove it.
+- Source: [`plugins/cheapskate/`](plugins/cheapskate/)
+- Docs: [README](plugins/cheapskate/README.md) · [overview](plugins/cheapskate/OVERVIEW.md)
+- Install (registry): `paseo plugin install asherlc/cheapskate`
+- Install (Git): `paseo plugin install git:Asherlc/paseo-plugins:plugins/cheapskate`
 
-Use **Check chain** to see which models are listed and how the first choice’s permission mode maps to each fallback. The check uses provider defaults and makes no model requests. Account access and remaining quota are determined when a backend runs a turn.
+### Devices — planned
 
-Use **Add chain** to give another route its own name, backends, and routing policy. Saved chains appear as separate models under the Cheapskate provider. Each named chain keeps its CLI model ID when renamed. The settings screen shows that ID beside its name. If a chain’s first eligible backend uses different permission modes, the draft offers a picker for that chain’s modes.
-
-## Composer controls
-
-Cheapskate shows the primary backend's thinking levels, permission modes, and provider controls in a draft. A running chat shows the controls of its active backend. Changes apply to the next turn. If changing a setting requires a new backing session, Cheapskate passes it the recent context and continues in the same chat.
-
-Select the backend name next to the composer to see the reason for the latest switch. **Try primary again** queues the first choice for the next message. Cheapskate checks permission compatibility and runs the ordinary fallback chain if that backend still hits a limit.
-
-On failover, Cheapskate uses the nearest available thinking level and a known equivalent or stricter permission mode. It skips a backend whose policy cannot preserve the selected restrictions. The timeline shows the backend and settings selected for the attempt. After a plugin reload, opening a Cheapskate draft populates the catalog used by CLI commands that specify a mode.
-
-## What happens when a model fails
-
-Cheapskate switches on quota and rate-limit failures. You can opt in to switching on provider overload. Ordinary errors stop the turn and surface in the chat. Each backend is tried once in a turn. A successful backend handles subsequent turns until it fails or is removed from the chain. Settings changes take effect on the next turn.
-
-If a failure includes an explicit retry delay or time with a timezone, Cheapskate records it for that backend in the chat and shows it in the routing details. It skips that backend until the reported time. Turn on **Return after quota reset** to try an earlier eligible backend on the first new message after its known reset. Cheapskate makes no background probes. A manual retry also honors a reported wait.
-
-Set **Billing policy** per chain. **Ask before paid or unclassified** presents a **Use once** or **Skip backend** choice in the chat before sending the message to a backend that may charge. **Free only** uses only backends you’ve marked **Free**. Billing classifications apply to the account configured on this host. Existing chains keep **Allow configured backends**, and new chains default to **Ask**. The approval applies to one backend attempt on one message. Tool permissions still follow the selected backend mode.
-
-Open a turn’s **Routing receipt** to see which backend answered, which were skipped and why, any reported reset time, and token and cost totals when Paseo makes them available for that turn.
-
-When Cheapskate starts a new backend mid-conversation, it passes along the latest message (including any attachments) and a bounded excerpt of recent user and assistant text and tool names. Cheapskate masks common access tokens and private-key blocks in historical text. The latest message and its attachments are forwarded normally. The backend starts its own native session in the same workspace and can inspect edits already made there. Credentials, billing, and tool approvals follow the configured backend. Provider-specific slash commands, steering, and rewind are outside the shared model interface.
-
-Cheapskate saves up to 300 recent timeline items and the backing agent ID in `plugin-data/cheapskate` under the daemon's Paseo home. Chat excerpts can contain sensitive information. Configure only backends that may receive that context.
+Simulator annotations for Paseo, at `plugins/devices/`. Not released yet.
 
 ## Development
 
+Packages are installed and tested independently. For Cheapskate:
+
 ```sh
+cd plugins/cheapskate
 npm ci
 npm run typecheck
 npm test
-paseo plugin reload cheapskate
 ```
 
-## CI and releases
-
-GitHub Actions runs typechecking, tests, and a package dry run on pull requests and
-pushes to `main`. Each passing push to `main` automatically increments the patch
-version in `package.json` and `package-lock.json`, pushes a `v` tag, and publishes
-a GitHub release with generated notes. The version commit uses `[skip ci]` to
-avoid starting another release. Do not bump the version manually for patch releases.
-
-After releasing, CI opens a version-specific submission issue in
-[`getpaseo/plugins`](https://github.com/getpaseo/plugins), pinned to the release
-commit. Marketplace publication still requires Paseo's review and approval.
-This keeps the existing Git distribution; no npm publishing credential is needed.
-
-Set the **`MARKETPLACE_TOKEN`** Actions secret in this repository before the first
-release. Use a dedicated classic GitHub personal access token with only
-`public_repo` scope, owned by the listing author, so it can open issues in the
-public registry repository. The built-in `GITHUB_TOKEN` is restricted to this
-repository and cannot submit there. Registry intake recognizes the issue's
-`Source` section and applies the submission label, so the token does not need
-collaborator access to the registry.
-
-If submission fails, fix the credential or service error and choose **Re-run failed
-jobs** in Actions. The marketplace job reuses the completed release and skips an
-issue with the same title, including closed issues. Re-running all jobs also
-reuses the tag when it belongs to the original source revision. The workflow can
-be started manually on `main` to make a new patch release without another source
-change. If `main` moves while a release runs, its atomic push fails; the next
-push's run checks and releases the newer revision.
+Releases are automated per package from [`.github/workflows/release.yml`](.github/workflows/release.yml); a change under one package does not bump another.
