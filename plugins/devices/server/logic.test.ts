@@ -5,6 +5,7 @@ import path from "node:path";
 import { before, test } from "node:test";
 import type { Device } from "../shared/contracts";
 import { splitDevices } from "../shared/select";
+import { waitFor } from "./exec";
 
 // state.ts picks its file from PASEO_HOME at import time: point it at a throwaway folder first
 let state: typeof import("./state");
@@ -646,9 +647,6 @@ test("preview launch rechecks workspace and consent between install and launch",
     previewId: "home/empty",
     agentRequest: true,
   };
-  const tick = async () => {
-    for (let i = 0; i < 25; i++) await new Promise((resolve) => setImmediate(resolve));
-  };
   await state.addAssignment(A, "ios:between", false);
   await state.allowAgentTools("ios:between", true);
   let launches = 0;
@@ -663,7 +661,11 @@ test("preview launch rechecks workspace and consent between install and launch",
     },
   );
   await tracker.launch(request, catalog);
-  await tick();
+  await waitFor(
+    () => Promise.resolve(tracker.statusOf("a", "ios:between").state !== "building"),
+    5_000,
+    "preview build to settle",
+  );
   assert.equal(launches, 0);
   const status = tracker.statusOf("a", "ios:between");
   assert.equal(status.state, "error");
