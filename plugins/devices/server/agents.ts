@@ -1,6 +1,6 @@
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { PluginHookContext, PluginServerContext, PluginSessionOpenRequest } from "@getpaseo/plugin/server";
+import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
 import type { Assignment } from "../shared/contracts";
 import { serialOf } from "./android";
 import { NODE, NODE_ENV, PLUGIN_DIR, dependencyFile } from "./paths";
@@ -13,11 +13,7 @@ export const PICKER_SOCKET = path.join(STATE_DIR, "picker.sock");
 const configFile = (workspaceId: string) =>
   path.join(CONFIG_DIR, `${workspaceId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
 
-/**
- * The picker MCP server as an agent runs it. The launch hook reissues this same config with the
- * agent's identity, so use_device records which chat owns the device for screenshot annotations.
- */
-function pickerServer(workspace: Workspace, agentId?: string) {
+function pickerServer(workspace: Workspace) {
   return {
     type: "stdio" as const,
     command: NODE,
@@ -26,7 +22,6 @@ function pickerServer(workspace: Workspace, agentId?: string) {
       ...NODE_ENV,
       PASEO_DEVICES_SOCKET: PICKER_SOCKET,
       PASEO_DEVICES_WORKSPACE: JSON.stringify(workspace),
-      ...(agentId ? { PASEO_DEVICES_AGENT: agentId } : {}),
     },
   };
 }
@@ -121,20 +116,8 @@ const NO_DEVICE =
 
 const USE_DEVICE =
   "Before driving a device, call `device-picker`'s use_device with the simulator you'll use. " +
-  "That claim tells the Device panel which chat to send your screenshot annotations to.";
-
-/**
- * The workspace an agent session belongs to: prefer the id Paseo opened it with, then the one
- * containing its cwd. cwd alone is ambiguous for worktrees; the id is authoritative when present.
- */
-async function requestWorkspace(paseo: PaseoApi, request: PluginSessionOpenRequest): Promise<Workspace | null> {
-  const ref = request.workspaceId ? paseo.workspaces.ref(request.workspaceId).current() : null;
-  if (ref?.workspaceDirectory)
-    return { workspaceId: ref.id, workspaceName: ref.title ?? ref.name, directory: ref.workspaceDirectory };
-  const found = await workspaceAt(paseo, request.cwd).catch(() => null);
-  if (!found) return null;
-  return request.workspaceId ? { ...found, workspaceId: request.workspaceId } : found;
-}
+  "That claim tells the Device panel which chat to send your screenshot annotations to. " +
+  "For isolated component work, check `device-picker`'s list_previews for named SwiftUI states.";
 
 /**
  * Agents started in a workspace get agent-device's MCP tools for one of its devices once the user
@@ -178,21 +161,15 @@ export function injectDeviceTools(server: PluginServerContext, ready: Promise<vo
     };
   });
 
-  // agent.create has no agentId; the launch hook does. Reissue the picker with it so use_device
-  // records the owner, which is how the Device panel routes annotations to the right chat.
-  const unhookOpen = server.addHook("agent.open.before", async ({ request }, { paseo }) => {
-    // history sessions only read old turns; unrelated background agents don't drive devices
-    if (request.purpose === "history") return undefined;
-    if (request.background && !request.labels["cheapskate.owner"]) return undefined;
+  // The picker inherits the chat ID from the provider process. The saved MCP registration is
+  // created once in agent.create, so session startup cannot register the same name again.
+  const unhookOpen = server.addHook("agent.open.before", async ({ request }) => {
+    if (request.purpose === "history" || !request.workspaceId) return undefined;
+    const agentId = request.background ? request.labels["cheapskate.owner"] : request.agentId;
+    if (!agentId) return undefined;
     await ready;
     if (!anyAgentTools()) return undefined;
-    const workspace = await requestWorkspace(paseo, request);
-    if (!workspace) return undefined;
-    const agentId = request.labels["cheapskate.owner"] ?? request.agentId;
-    return {
-      ...request,
-      mcpServers: { ...request.mcpServers, "device-picker": pickerServer(workspace, agentId) },
-    };
+    return { ...request, env: { ...request.env, PASEO_DEVICES_AGENT: agentId } };
   });
 
   return () => {

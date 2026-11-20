@@ -290,7 +290,7 @@ export default function contribute(server: PluginServerContext) {
     async listPreviews(workspace, deviceId) {
       await ready;
       const device = previewStatusDevice(workspace.workspaceId, deviceId);
-      const { catalog, status } = await previewsFor(workspace.directory, device);
+      const { catalog, status } = await previewsFor(workspace.directory, workspace.workspaceId, device);
       const lines = [`Previews in ${workspace.workspaceName}:`];
       if (!catalog?.previews.length) lines.push(CATALOG_GUIDANCE);
       else for (const preview of catalog.previews) lines.push(`  ${preview.id} — ${preview.title}`);
@@ -347,7 +347,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(listPreviewsRpc, async ({ workspaceId, deviceId }) => {
     await ready;
     const device = deviceId ?? targetOf(workspaceId)?.deviceId;
-    const { catalog, status } = await previewsFor(previewDirectory(workspaceId, device), device);
+    const { catalog, status } = await previewsFor(previewDirectory(workspaceId, device), workspaceId, device);
     return { previews: catalog?.previews ?? [], status, guidance: catalog ? null : CATALOG_GUIDANCE };
   });
 

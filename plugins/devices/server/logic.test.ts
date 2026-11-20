@@ -499,14 +499,14 @@ test("preview launch: one build per workspace, shared statuses, consent rechecke
       launches++;
     },
   );
-  assert.deepEqual(tracker.statusOf("ios:preview"), { state: "idle" });
+  assert.deepEqual(tracker.statusOf("a", "ios:preview"), { state: "idle" });
   const building = await tracker.launch(request, catalog);
   assert.equal(building.state, "building");
-  assert.deepEqual(tracker.statusOf("ios:preview"), building);
+  assert.deepEqual(tracker.statusOf("a", "ios:preview"), building);
   await assert.rejects(tracker.launch(request, catalog), /already building/i);
   release();
   await tick();
-  assert.deepEqual(tracker.statusOf("ios:preview"), {
+  assert.deepEqual(tracker.statusOf("a", "ios:preview"), {
     state: "opened",
     previewId: "home/empty",
     deviceId: "ios:preview",
@@ -527,7 +527,7 @@ test("preview launch: one build per workspace, shared statuses, consent rechecke
   );
   await failed.launch(request, catalog);
   await tick();
-  const failedStatus = failed.statusOf("ios:preview");
+  const failedStatus = failed.statusOf("a", "ios:preview");
   assert.equal(failedStatus.state, "error");
   assert.match(failedStatus.state === "error" ? failedStatus.error : "", /xcodebuild failed/);
 
@@ -546,10 +546,73 @@ test("preview launch: one build per workspace, shared statuses, consent rechecke
   await tick();
   assert.equal(installs, 1);
   assert.equal(launches, 1);
-  const revokedStatus = revoked.statusOf("ios:preview");
+  const revokedStatus = revoked.statusOf("a", "ios:preview");
   assert.equal(revokedStatus.state, "error");
   assert.match(revokedStatus.state === "error" ? revokedStatus.error : "", /no longer allowed/);
   await state.removeAssignment("a", "ios:preview");
+});
+
+test("a preview build that outlives a takeover cannot write into the new holder's status", async () => {
+  const { previewCatalog } = await import("../shared/previews");
+  const { Previews } = await import("./previews");
+  const catalog = previewCatalog.parse({
+    ...previewFixture(),
+    previews: [
+      { id: "a/state", title: "A state" },
+      { id: "b/state", title: "B state" },
+    ],
+  });
+  const tick = async () => {
+    for (let i = 0; i < 25; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  await state.addAssignment(A, "ios:swap", false);
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tracker = new Previews(
+    async (usedCatalog, request) => {
+      if (request.workspaceId === "a") await gate;
+      return {
+        udid: "UDID",
+        bundleId: usedCatalog.bundleId,
+        previewId: request.previewId,
+        appPath: "/tmp/App.app",
+      };
+    },
+    async () => {},
+    async () => {},
+  );
+  const requestA = {
+    directory: A.directory,
+    workspaceId: "a",
+    deviceId: "ios:swap",
+    previewId: "a/state",
+    agentRequest: false,
+  };
+  assert.equal((await tracker.launch(requestA, catalog)).state, "building");
+
+  // A loses the simulator to B while its build is still in flight
+  await state.removeAssignment("a", "ios:swap");
+  await state.addAssignment(B, "ios:swap", false);
+  assert.deepEqual(tracker.statusOf("b", "ios:swap"), { state: "idle" });
+
+  const requestB = { ...requestA, directory: B.directory, workspaceId: "b", previewId: "b/state" };
+  assert.equal((await tracker.launch(requestB, catalog)).state, "building");
+  await tick();
+  const opened = { state: "opened", previewId: "b/state", deviceId: "ios:swap" };
+  assert.deepEqual(tracker.statusOf("b", "ios:swap"), opened);
+
+  // A's build finishes later: its error belongs to A alone and must not overwrite B's opened status
+  release();
+  await tick();
+  const stale = tracker.statusOf("a", "ios:swap");
+  assert.equal(stale.state, "error");
+  assert.equal(stale.state === "error" ? stale.previewId : "", "a/state");
+  assert.match(stale.state === "error" ? stale.error : "", /isn't assigned/);
+  assert.deepEqual(tracker.statusOf("b", "ios:swap"), opened);
+
+  await state.removeAssignment("b", "ios:swap");
 });
 
 test("preview launch rechecks workspace and consent between install and launch", async () => {
@@ -583,7 +646,7 @@ test("preview launch rechecks workspace and consent between install and launch",
   await tracker.launch(request, catalog);
   await tick();
   assert.equal(launches, 0);
-  const status = tracker.statusOf("ios:between");
+  const status = tracker.statusOf("a", "ios:between");
   assert.equal(status.state, "error");
   assert.match(status.state === "error" ? status.error : "", /no longer allowed/);
   await state.removeAssignment("a", "ios:between");

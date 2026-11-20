@@ -12,6 +12,12 @@ import { agentToolsAllowed, holderOf, isInside, STATE_DIR, targetOf } from "./st
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * A preview belongs to the workspace that started it, not just to the simulator: a build that
+ * outlives a release/takeover must not write its result into the new holder's status.
+ */
+const statusKey = (workspaceId: string, deviceId: string) => JSON.stringify([workspaceId, deviceId]);
+
 /** Reads the optional catalog. Missing file means no previews; malformed data names the problem. */
 export async function readCatalog(directory: string): Promise<PreviewCatalog | null> {
   const file = path.join(directory, "paseo-previews.json");
@@ -178,8 +184,8 @@ export class Previews {
     private readonly launchApp: PreviewLaunch = defaultLaunch,
   ) {}
 
-  statusOf(deviceId: string): PreviewStatus {
-    return this.status.get(deviceId) ?? { state: "idle" };
+  statusOf(workspaceId: string, deviceId: string): PreviewStatus {
+    return this.status.get(statusKey(workspaceId, deviceId)) ?? { state: "idle" };
   }
 
   async launch(request: PreviewRequest, catalog: PreviewCatalog): Promise<PreviewStatus> {
@@ -190,8 +196,9 @@ export class Previews {
       previewId: request.previewId,
       deviceId: request.deviceId,
     };
+    const key = statusKey(request.workspaceId, request.deviceId);
     this.building.set(request.workspaceId, { deviceId: request.deviceId, previewId: request.previewId });
-    this.status.set(request.deviceId, current);
+    this.status.set(key, current);
     void (async () => {
       try {
         const plan = await this.build(catalog, request);
@@ -206,13 +213,13 @@ export class Previews {
         await this.install(plan);
         assertCurrent();
         await this.launchApp(plan);
-        this.status.set(request.deviceId, {
+        this.status.set(key, {
           state: "opened",
           previewId: request.previewId,
           deviceId: request.deviceId,
         });
       } catch (error) {
-        this.status.set(request.deviceId, {
+        this.status.set(key, {
           state: "error",
           previewId: request.previewId,
           deviceId: request.deviceId,
@@ -247,10 +254,11 @@ export async function openPreview(
 /** Shared catalog and status read for both the pane and the picker. */
 export async function previewsFor(
   directory: string,
+  workspaceId: string,
   deviceId?: string,
 ): Promise<{ catalog: PreviewCatalog | null; status: PreviewStatus }> {
   const catalog = await readCatalog(directory);
-  return { catalog, status: deviceId ? previews.statusOf(deviceId) : { state: "idle" } };
+  return { catalog, status: deviceId ? previews.statusOf(workspaceId, deviceId) : { state: "idle" } };
 }
 
 export const previews = new Previews();
