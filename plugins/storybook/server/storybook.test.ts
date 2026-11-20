@@ -95,6 +95,19 @@ test("validates story IDs before selection and filters feedback while preserving
   assert.deepEqual(await readFeedback(target), { target, comments: [review] });
 });
 
+test("uses a separate browser address without fetching it from the daemon", async () => {
+  const url = `${base}/storybook`;
+  const browserUrl = "https://forward.invalid/review/index.html?path=/story/old";
+  const storyUrl = `https://forward.invalid/review/?path=/story/${primary.id}`;
+  const list = await listStories({ url, browserUrl, query: "primary" });
+  assert.equal(list.stories[0]?.storyUrl, storyUrl);
+  const target = await selectStory({ url, browserUrl, storyId: primary.id }, { workspaceId: "workspace-1", agentId: "owner-1" });
+  assert.equal(target.url, `${url}/`);
+  assert.equal(target.storyUrl, storyUrl);
+  assert.deepEqual((await readFeedback(target)).comments, [review]);
+  await assert.rejects(listStories({ url, browserUrl: "https://user:password@forward.invalid" }), /without embedded credentials/);
+});
+
 test("reports missing or invalid addon responses at the root of the selected origin", async (t) => {
   const responses = [
     { status: 404, contentType: "application/json", body: "{}", error: /Canvas Comments.*HTTP 404/i },
@@ -135,7 +148,17 @@ test("tools capture the owning agent, preserve existing tools, and pin an in-fli
     reason: "create", purpose: "interactive", background: true, labels: { "cheapskate.owner": "owner-1" },
     metadata: {}, tools: [existingTool], env: {}, mcpServers: {},
   };
-  const toolContext = { agent: { workspaceId: "workspace-1" }, signal: new AbortController().signal } as AgentToolContext;
+  const reviewEntries: { agentId: string; item: unknown }[] = [];
+  const toolContext: AgentToolContext = {
+    agent: {
+      id: request.agentId, workspaceId: request.workspaceId, cwd: request.cwd, provider: request.provider,
+      title: request.title, background: request.background, parentAgentId: null, metadata: {},
+    },
+    signal: new AbortController().signal,
+    paseo: { agents: { ref: (agentId: string) => ({ timeline: {
+      append: async (item: unknown) => { reviewEntries.push({ agentId, item }); },
+    } }) } } as unknown as AgentToolContext["paseo"],
+  };
   const openSession = (session: PluginSessionOpenRequest) => open({ request: session }, toolContext);
   assert.equal(await openSession({ ...request, purpose: "history" }), undefined);
   assert.equal(await openSession({ ...request, labels: {} }), undefined);
@@ -146,6 +169,10 @@ test("tools capture the owning agent, preserve existing tools, and pin an in-fli
   const url = `${base}/storybook`;
   await select.execute({ url, storyId: primary.id }, toolContext);
   await assert.rejects(async () => select.execute({ url, storyId: docs.id }, toolContext), /not found/i);
+  assert.deepEqual(reviewEntries, [{
+    agentId: "owner-1",
+    item: { type: "plugin", id: "review-ready", kind: "review-ready", version: 1, data: { workspaceId: "workspace-1" } },
+  }]);
   let resolve!: () => void;
   holdFeedback = new Promise<void>((release) => { resolve = release; });
   try {

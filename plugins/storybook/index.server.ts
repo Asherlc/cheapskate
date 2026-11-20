@@ -1,7 +1,7 @@
 import { defineAgentTool, type AgentToolContext, type PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import {
-  getTargetRpc, listStoriesInput, listStoriesRpc, readFeedbackRpc, selectStoryInput, selectStoryRpc,
+  getTargetRpc, listStoriesInput, listStoriesRpc, readFeedbackRpc, reviewEntry, selectStoryInput, selectStoryRpc,
   serverStatusRpc, startServerInput, stopServerRpc, type ReviewTarget, type ServerStatus,
 } from "./shared/contracts";
 import { formatFeedback } from "./shared/feedback";
@@ -14,7 +14,7 @@ function workspaceIdFor({ agent }: AgentToolContext) {
 }
 
 function describeServer(status: ServerStatus) {
-  const location = status.url ? ` at ${status.url}` : "";
+  const location = status.url ? ` on the daemon at ${status.url}` : "";
   const error = status.error ? `\n${status.error}` : "";
   return { text: `Storybook server is ${status.state}${location}.${error}`, structuredContent: status };
 }
@@ -33,8 +33,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(serverStatusRpc, ({ workspaceId }) => managed.status(workspaceId));
   server.handle(stopServerRpc, ({ workspaceId }) => managed.stop(workspaceId));
   server.handle(getTargetRpc, ({ workspaceId }) => targets.get(workspaceId) ?? null);
-  server.handle(selectStoryRpc, async ({ workspaceId, agentId, url, storyId }) => {
-    const target = await selectStory({ url, storyId }, { workspaceId, agentId });
+  server.handle(selectStoryRpc, async ({ workspaceId, agentId, ...input }) => {
+    const target = await selectStory(input, { workspaceId, agentId });
     targets.set(workspaceId, target);
     return target;
   });
@@ -48,7 +48,7 @@ export default function contribute(server: PluginServerContext) {
 
   const listTool = defineAgentTool({
     name: "storybook_list_stories",
-    description: "List stories at a Storybook HTTP(S) URL. Optionally filter by title, name, or story ID.",
+    description: "List stories at a Storybook HTTP(S) URL reachable by the daemon. Optionally filter by title, name, or story ID. Supply browserUrl if story links need a different address reachable by the browser.",
     input: listStoriesInput,
     async execute(input, { signal }) {
       const result = await listStories(input, signal);
@@ -59,7 +59,7 @@ export default function contribute(server: PluginServerContext) {
 
   const startTool = defineAgentTool({
     name: "storybook_start",
-    description: "Launch the project's Storybook development command as a workspace-owned server. Provide an executable, an argument array with one {port} placeholder, and an optional relative cwd. Bind to 127.0.0.1 and use an exact port and noninteractive flags. Set NODE_OPTIONS=--title=Storybook for this launch so Paseo Ports labels it Storybook. Preserve any existing NODE_OPTIONS flags. This returns during startup. Use storybook_status for the ready URL.",
+    description: "Launch the project's Storybook development command as a workspace-owned server. Provide an executable, an argument array with one {port} placeholder, and an optional relative cwd. Bind to 127.0.0.1 and use an exact port and noninteractive flags. Set NODE_OPTIONS=--title=Storybook for this launch so Paseo Ports labels it Storybook. Preserve any existing NODE_OPTIONS flags. This returns during startup. Use storybook_status for the daemon-local URL.",
     input: startServerInput,
     execute(input, context) {
       context.signal.throwIfAborted();
@@ -68,7 +68,7 @@ export default function contribute(server: PluginServerContext) {
   });
   const statusTool = defineAgentTool({
     name: "storybook_status",
-    description: "Get the workspace Storybook server status and its URL when ready.",
+    description: "Get the workspace Storybook server status and its daemon-local URL when ready.",
     input: z.object({}),
     execute(_input, context) {
       return describeServer(managed.status(workspaceIdFor(context)));
@@ -93,15 +93,23 @@ export default function contribute(server: PluginServerContext) {
     const agentId = ownerId ?? request.agentId;
     const selectTool = defineAgentTool({
       name: "storybook_select_story",
-      description: "Select a Storybook story by ID for review in this Paseo workspace.",
+      description: "Select a Storybook story by ID and add an Open Storybook review button to the conversation. Use url for daemon access and optionally browserUrl for an existing private URL reachable by the user's browser. A daemon-local address only works in a browser on the same machine.",
       input: selectStoryInput,
-      async execute(input, { agent, signal }) {
+      async execute(input, { agent, paseo, signal }) {
         const workspaceId = agent.workspaceId;
         if (!workspaceId) throw new Error("Open an agent in a workspace before selecting a Storybook story.");
         const target = await selectStory(input, { workspaceId, agentId }, signal);
         targets.set(workspaceId, target);
+        const { kind, version } = reviewEntry;
+        let action = "Click Open Storybook review in this conversation to open the review panel.";
+        try {
+          await paseo.agents.ref(agentId).timeline.append({ type: "plugin", id: kind, kind, version, data: { workspaceId } });
+        } catch (error) {
+          console.warn("Could not add the Storybook review button to the conversation.", error);
+          action = "Choose Open Storybook review in the Command Center for this conversation.";
+        }
         return {
-          text: `Selected ${target.title} / ${target.name}. Open ${target.storyUrl} using Paseo’s existing browser tools.`,
+          text: `Selected ${target.title} / ${target.name}. ${action}`,
           structuredContent: target,
         };
       },

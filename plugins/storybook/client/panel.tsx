@@ -1,7 +1,7 @@
-import { useAgent, useRpc, type PluginAgentPanelProps, type PluginClientContext } from "@getpaseo/plugin/client";
+import { openExternalUrl, useAgent, useRpc, type PluginAgentPanelProps, type PluginClientContext } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   getTargetRpc, listStoriesRpc, readFeedbackRpc, selectStoryRpc, serverStatusRpc, stopServerRpc,
   type ReviewFeedback, type ReviewTarget, type ServerStatus,
@@ -55,11 +55,14 @@ function Review({ target, styles, panel }: { target: ReviewTarget; styles: Style
     onSuccess: setFeedback,
   });
 
-  async function openStory() {
+  async function openStory(inPaseo: boolean) {
     setMessage(undefined);
     try {
-      if (navigation?.openBrowser) navigation.openBrowser({ url: target.storyUrl, workspaceId: target.workspaceId, serverId: host.id });
-      else await Linking.openURL(target.storyUrl);
+      if (inPaseo && navigation?.openBrowser) {
+        navigation.openBrowser({ url: target.storyUrl, workspaceId: target.workspaceId, serverId: host.id });
+      } else {
+        await openExternalUrl(target.storyUrl);
+      }
     } catch {
       setMessage(`Could not open the story. Open ${target.storyUrl} in your browser.`);
     }
@@ -81,7 +84,8 @@ function Review({ target, styles, panel }: { target: ReviewTarget; styles: Style
       <Text style={styles.muted}>Review conversation {ownerTitle ?? target.agentId}</Text>
       <Text selectable style={styles.muted}>{target.storyUrl}</Text>
       <View style={styles.row}>
-        <Action text="Open story" onPress={() => { void openStory(); }} styles={styles} />
+        <Action text="Open in browser" onPress={() => { void openStory(false); }} styles={styles} />
+        {navigation?.openBrowser && <Action text="Open in Paseo" onPress={() => { void openStory(true); }} styles={styles} />}
         <Action text={refresh.isPending ? "Reading feedback…" : "Refresh feedback"} disabled={refresh.isPending} onPress={() => {
           setMessage(undefined);
           refresh.mutate();
@@ -130,16 +134,17 @@ export function StorybookPanel(panel: PanelProps) {
     queryFn: () => getTarget({ workspaceId }),
     retry: false,
     refetchOnMount: "always",
-    refetchOnWindowFocus: false,
+    refetchInterval: 2500,
   });
   const [enteredUrl, setEnteredUrl] = useState<string>();
+  const [browserUrl, setBrowserUrl] = useState("");
   const [query, setQuery] = useState("");
   const managedUrl = server.data?.state === "ready" ? server.data.url : undefined;
   const url = enteredUrl ?? managedUrl ?? review.data?.url ?? "";
   const list = useMutation({ mutationFn: (url: string) => listStories({ url }) });
   const select = useMutation({
     mutationFn: selectStory,
-    onSuccess: (target) => { queryClient.setQueryData(targetKey, target); },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: targetKey, exact: true }),
   });
   const search = query.trim().toLowerCase();
   const listing = list.variables === url ? list.data : undefined;
@@ -159,24 +164,22 @@ export function StorybookPanel(panel: PanelProps) {
             <Action text="Stop Storybook" onPress={() => stop.mutate()} disabled={stop.isPending} styles={styles} />
           )}
         </View>
-        {managedUrl && <Text selectable style={styles.muted}>{managedUrl}</Text>}
+        {managedUrl && <Text selectable style={styles.muted}>Daemon URL {managedUrl}</Text>}
         {(stop.error || server.error || server.data?.error) && (
           <Text accessibilityRole="alert" selectable style={styles.text}>
             {stop.error?.message ?? server.error?.message ?? server.data?.error}
           </Text>
         )}
       </View>
-      <View style={styles.row}>
-        <Action text={review.isFetching ? "Checking selection…" : "Refresh selection"} onPress={() => { void review.refetch(); }} disabled={review.isFetching || select.isPending} styles={styles} />
-      </View>
       {review.error && <Text accessibilityRole="alert" style={styles.text}>{review.error.message}</Text>}
       {target && <Review key={JSON.stringify(target)} target={target} styles={styles} panel={panel} />}
       <Text style={styles.title}>Browse stories</Text>
       <Text style={styles.muted}>Selecting for {agentTitle ?? agentId}</Text>
+      <Text style={styles.text}>Daemon URL</Text>
       <TextInput
-        accessibilityLabel="Storybook URL"
+        accessibilityLabel="Daemon URL"
         value={url}
-        onChangeText={(value) => { setEnteredUrl(value); list.reset(); select.reset(); }}
+        onChangeText={(value) => { setEnteredUrl(value); setBrowserUrl(""); list.reset(); select.reset(); }}
         editable={!busy}
         placeholder="http://localhost:6006"
         placeholderTextColor={theme.colors.foregroundMuted}
@@ -185,6 +188,18 @@ export function StorybookPanel(panel: PanelProps) {
         keyboardType="url"
         style={styles.field}
       />
+      <Text style={styles.text}>Browser URL (optional)</Text>
+      <TextInput
+        accessibilityLabel="Browser URL"
+        value={browserUrl}
+        onChangeText={(value) => { setBrowserUrl(value); select.reset(); }}
+        editable={!busy}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+        style={styles.field}
+      />
+      <Text style={styles.muted}>If you connect to a remote daemon, enter a private forwarded Storybook URL, such as a Tailnet link from Ports.</Text>
       <View style={styles.row}>
         <Action text={list.isPending ? "Listing stories…" : "List stories"} onPress={() => {
           if (url !== managedUrl) setEnteredUrl(url);
@@ -201,9 +216,9 @@ export function StorybookPanel(panel: PanelProps) {
             <Action
               key={story.id}
               text={`${story.title} / ${story.name}`}
-              disabled={busy || review.isFetching}
+              disabled={busy}
               onPress={() => {
-                select.mutate({ workspaceId, agentId, url: listing.url, storyId: story.id });
+                select.mutate({ workspaceId, agentId, url: listing.url, storyId: story.id, browserUrl: browserUrl.trim() || undefined });
               }}
               styles={styles}
             />
