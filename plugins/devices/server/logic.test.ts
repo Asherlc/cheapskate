@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { before, test } from "node:test";
@@ -21,6 +21,25 @@ before(async () => {
 
 const A = { workspaceId: "a", workspaceName: "Checkout", directory: "/w/app" };
 const B = { workspaceId: "b", workspaceName: "Onboarding", directory: "/w/app-worktrees/onboarding" };
+
+test("Device tool paths follow the active checkout when a Git update replaces it", async () => {
+  const { dependencyFile } = await import("./paths");
+  const config = path.join(process.env.PASEO_HOME!, "config.json");
+  const original = readFileSync(config);
+  const next = mkdtempSync(path.join(os.tmpdir(), "devices-updated-"));
+  try {
+    writeFileSync(path.join(next, "paseo-plugin.json"), JSON.stringify({ id: "devices" }));
+    symlinkSync(path.join(import.meta.dirname, "..", "node_modules"), path.join(next, "node_modules"), "dir");
+    writeFileSync(config, JSON.stringify({ plugins: { devices: { path: next, enabled: true } } }));
+    assert.equal(
+      dependencyFile("agent-device", "bin/agent-device.mjs"),
+      path.join(next, "node_modules", "agent-device", "bin", "agent-device.mjs"),
+    );
+  } finally {
+    writeFileSync(config, original);
+    rmSync(next, { recursive: true });
+  }
+});
 
 test("a held device isn't silently taken by another workspace", async () => {
   await state.addAssignment(A, "ios:1", false);

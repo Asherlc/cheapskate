@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from "node:child_process";
 import path from "node:path";
-import { ADDON_NODE, PLUGIN_DIR } from "./paths";
+import { ADDON_NODE, pluginDir } from "./paths";
 
 /**
  * One long-lived Node-in-PATH process for every sharp job. Frame encoding runs for each live view,
@@ -29,7 +29,7 @@ function start(): Promise<ChildProcess> {
   if (starting) return starting;
   starting = new Promise<ChildProcess>((resolve, reject) => {
     let ready = false;
-    const worker = fork(path.join(PLUGIN_DIR, "server", "image-helper.mjs"), [], {
+    const worker = fork(path.join(pluginDir(), "server", "image-helper.mjs"), [], {
       execPath: ADDON_NODE,
       serialization: "json",
       stdio: ["ignore", "pipe", "pipe", "ipc"],

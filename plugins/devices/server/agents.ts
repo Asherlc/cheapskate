@@ -3,21 +3,20 @@ import path from "node:path";
 import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
 import type { Assignment } from "../shared/contracts";
 import { serialOf } from "./android";
-import { NODE, NODE_ENV, PLUGIN_DIR, dependencyFile } from "./paths";
+import { NODE, NODE_ENV, dependencyFile, pluginDir } from "./paths";
 import type { Workspace } from "./picker";
 import { STATE_DIR, anyAgentTools, assignmentFor, assignments, isInside, setTarget, targetOf } from "./state";
 
-const AGENT_DEVICE = dependencyFile("agent-device", "bin/agent-device.mjs");
 const CONFIG_DIR = path.join(STATE_DIR, "agent-device");
 export const PICKER_SOCKET = path.join(STATE_DIR, "picker.sock");
 const configFile = (workspaceId: string) =>
   path.join(CONFIG_DIR, `${workspaceId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
 
-function pickerServer(workspace: Workspace) {
+function pickerServer(workspace: Workspace, directory: string) {
   return {
     type: "stdio" as const,
     command: NODE,
-    args: [path.join(PLUGIN_DIR, "server", "picker-bridge.mjs")],
+    args: [path.join(directory, "server", "picker-bridge.mjs")],
     env: {
       ...NODE_ENV,
       PASEO_DEVICES_SOCKET: PICKER_SOCKET,
@@ -136,6 +135,8 @@ export function injectDeviceTools(server: PluginServerContext, ready: Promise<vo
     if (!workspace) return undefined;
     // picks up an emulator started outside the plugin since the last change
     await syncAgentConfigs().catch((error) => console.error("syncing agent-device configs:", error));
+    // A Git update stages the plug-in before its new directory is written to config.json.
+    const directory = pluginDir();
     return {
       ...request,
       config: {
@@ -145,14 +146,14 @@ export function injectDeviceTools(server: PluginServerContext, ready: Promise<vo
           device: {
             type: "stdio" as const,
             command: NODE,
-            args: [AGENT_DEVICE, "mcp"],
+            args: [dependencyFile("agent-device", "bin/agent-device.mjs", directory), "mcp"],
             env: {
               ...NODE_ENV,
               AGENT_DEVICE_CONFIG: configFile(workspace.workspaceId),
               AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1",
             },
           },
-          "device-picker": pickerServer(workspace),
+          "device-picker": pickerServer(workspace, directory),
         },
         systemPrompt: [config.systemPrompt, targetOf(workspace.workspaceId) ? USE_DEVICE : NO_DEVICE]
           .filter(Boolean)

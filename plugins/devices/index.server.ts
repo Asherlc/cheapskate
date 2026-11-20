@@ -302,10 +302,12 @@ export default function contribute(server: PluginServerContext) {
       await ready;
       const device = deviceId ?? targetOf(workspace.workspaceId)?.deviceId;
       if (!device) throw new Error("No device is selected; call use_device first");
-      const { status } = await startPreview(workspace.directory, workspace.workspaceId, previewId, device, true);
+      const { catalog, status } = await startPreview(
+        workspace.directory, workspace.workspaceId, previewId, device, true,
+      );
       // the start is valid: point the tools at this simulator and route annotations to the claiming chat
       await claimPreviewTarget(workspace.workspaceId, device, agentId);
-      return `Building ${previewId} on ${device} (${status.state}). Call list_previews and wait for opened before interacting.`;
+      return `Building ${previewId} on ${device} (${status.state}). Call list_previews until opened, then open a device session for ${catalog.bundleId} with foreground enabled and without relaunching the app.`;
     },
   };
   const stopPicker = servePicker(PICKER_SOCKET, picker);

@@ -8,7 +8,7 @@ import type { Device } from "../shared/contracts";
 import { keyEvents } from "../shared/keyboard";
 import { run, sleep, waitFor } from "./exec";
 import type { Frame } from "./frames";
-import { ADDON_NODE, PLUGIN_DIR, pluginRequire } from "./paths";
+import { ADDON_NODE, pluginDir, pluginRequire } from "./paths";
 
 const WebSocket = pluginRequire("ws") as typeof WebSocketType;
 const simctl = (args: string[], timeoutMs?: number) => run("xcrun", ["simctl", ...args], timeoutMs);
@@ -103,7 +103,7 @@ function startHelper(): Promise<Helper> {
   const socket = path.join(dir, "ios.sock");
   const started = new Promise<Helper>((resolve, reject) => {
     // stdin stays open: the helper exits when this process does
-    const child = spawn(ADDON_NODE, [path.join(PLUGIN_DIR, "server", "ios-helper.mjs"), socket], {
+    const child = spawn(ADDON_NODE, [path.join(pluginDir(), "server", "ios-helper.mjs"), socket], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stderr = "";

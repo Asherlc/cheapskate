@@ -13,7 +13,7 @@ const HOME = process.env.PASEO_HOME ?? path.join(os.homedir(), ".paseo");
 const MANIFEST_ID = "devices";
 
 /** The configured plugin directory whose manifest is this plugin's, whatever ID it was installed under. */
-function pluginDir(): string {
+export function pluginDir(): string {
   const config = JSON.parse(readFileSync(path.join(HOME, "config.json"), "utf8")) as {
     plugins?: Record<string, { path?: string; enabled?: boolean }>;
   };
@@ -33,8 +33,6 @@ function pluginDir(): string {
   throw new Error("The devices plugin directory is missing from the daemon config");
 }
 
-export const PLUGIN_DIR = pluginDir();
-
 /**
  * The Node that runs agent-device: this process's own binary. In the desktop app that's Paseo's
  * Electron helper, which needs ELECTRON_RUN_AS_NODE=1 (this process already has it; processes
@@ -51,11 +49,11 @@ export const NODE_ENV: Record<string, string> = process.versions.electron
  * Node.js in PATH instead.
  */
 export const ADDON_NODE = process.versions.electron ? "node" : process.execPath;
-export const pluginRequire = createRequire(path.join(PLUGIN_DIR, "package.json"));
+export const pluginRequire = createRequire(path.join(pluginDir(), "package.json"));
 
 /** Absolute path of a file inside an installed dependency (some don't export package.json). */
-export function dependencyFile(pkg: string, file: string): string {
-  const result = path.join(PLUGIN_DIR, "node_modules", pkg, file);
-  if (!existsSync(result)) throw new Error(`${pkg} isn't installed in ${PLUGIN_DIR}; run npm ci there`);
+export function dependencyFile(pkg: string, file: string, directory = pluginDir()): string {
+  const result = path.join(directory, "node_modules", pkg, file);
+  if (!existsSync(result)) throw new Error(`${pkg} isn't installed in ${directory}; run npm ci there`);
   return result;
 }
