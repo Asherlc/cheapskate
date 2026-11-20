@@ -43,6 +43,7 @@ async function getJson(url: URL, label: string, hint: string, signal?: AbortSign
 
 export async function listStories(input: z.infer<typeof listStoriesInput>, signal?: AbortSignal) {
   const url = normalizeStorybookUrl(input.url);
+  const browserUrl = input.browserUrl === undefined ? url : normalizeStorybookUrl(input.browserUrl);
   const endpoint = new URL("index.json", url);
   const hint = "Check the Storybook URL and make sure the daemon can reach it.";
   const result = storyIndex.safeParse(await getJson(endpoint, "Storybook index", hint, signal));
@@ -52,7 +53,7 @@ export async function listStories(input: z.infer<typeof listStoriesInput>, signa
   const stories = Object.values(entries)
     .filter((entry) => entry.type !== "docs")
     .filter(({ title, name, id }) => `${title} ${name} ${id}`.toLowerCase().includes(query))
-    .map(({ id, title, name }) => ({ id, title, name, storyUrl: `${url}?path=/story/${encodeURIComponent(id)}` }));
+    .map(({ id, title, name }) => ({ id, title, name, storyUrl: `${browserUrl}?path=/story/${encodeURIComponent(id)}` }));
   return { url, stories };
 }
 
