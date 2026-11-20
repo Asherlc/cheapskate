@@ -20,12 +20,14 @@ Add `"storybook-addon-canvas-comments"` to the existing `addons` array in `.stor
 
 ## Run Storybook from Paseo
 
+Set `NODE_OPTIONS=--title=Storybook` for the launch so the Ports panel labels it **Storybook**. Append `--title=Storybook` when your command already sets other Node options.
+
 Ask the agent in your workspace to start Storybook. It calls `storybook_start` with the project's executable and arguments. Use one `{port}` placeholder, which the plugin replaces with an available port. For an npm project whose `storybook` script runs `storybook dev`, the tool input looks like this.
 
 ```json
 {
-  "command": "npm",
-  "args": ["run", "storybook", "--", "--host", "127.0.0.1", "--port", "{port}", "--exact-port", "--ci"]
+  "command": "env",
+  "args": ["NODE_OPTIONS=--title=Storybook", "npm", "run", "storybook", "--", "--host", "127.0.0.1", "--port", "{port}", "--exact-port", "--ci"]
 }
 ```
 

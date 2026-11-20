@@ -59,7 +59,7 @@ export default function contribute(server: PluginServerContext) {
 
   const startTool = defineAgentTool({
     name: "storybook_start",
-    description: "Launch the project's Storybook development command as a workspace-owned server. Provide an executable, an argument array with one {port} placeholder, and an optional relative cwd. Bind to 127.0.0.1 and use an exact port and noninteractive flags. This returns during startup. Use storybook_status for the ready URL.",
+    description: "Launch the project's Storybook development command as a workspace-owned server. Provide an executable, an argument array with one {port} placeholder, and an optional relative cwd. Bind to 127.0.0.1 and use an exact port and noninteractive flags. Set NODE_OPTIONS=--title=Storybook for this launch so Paseo Ports labels it Storybook. Preserve any existing NODE_OPTIONS flags. This returns during startup. Use storybook_status for the ready URL.",
     input: startServerInput,
     execute(input, context) {
       context.signal.throwIfAborted();
