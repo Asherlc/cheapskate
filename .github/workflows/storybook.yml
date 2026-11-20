@@ -1,0 +1,34 @@
+name: Storybook CI
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/storybook/**'
+      - '.github/workflows/storybook.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/storybook/**'
+      - '.github/workflows/storybook.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-storybook:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/storybook
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugins/storybook/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm pack --dry-run --ignore-scripts

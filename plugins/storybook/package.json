@@ -1,0 +1,38 @@
+{
+  "name": "paseo-plugin-storybook",
+  "version": "0.1.0",
+  "description": "Storybook integration with Canvas Comments for agent story selection and feedback retrieval.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Asherlc/paseo-plugins.git",
+    "directory": "plugins/storybook"
+  },
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json",
+    "test": "tsx --test server/*.test.ts"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "index.client.tsx",
+    "index.server.ts",
+    "client/*.ts",
+    "client/*.tsx",
+    "server/storybook.ts",
+    "shared/*.ts"
+  ],
+  "devDependencies": {
+    "@getpaseo/plugin": "0.16.2",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^22.20.5",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  },
+  "type": "module"
+}

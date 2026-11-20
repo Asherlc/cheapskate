@@ -19,6 +19,13 @@ iOS simulators and Android emulators per workspace, with a live view and agent t
 - Install from Git with `paseo plugin install git:Asherlc/paseo-plugins:plugins/devices`.
 - [Devices documentation and upstream attribution](plugins/devices/README.md)
 
+### Storybook
+
+Select a Storybook story for review and bring Canvas Comments annotations into the owning conversation draft.
+
+- Install from Git with `paseo plugin install git:Asherlc/paseo-plugins:plugins/storybook`.
+- [Storybook documentation](plugins/storybook/README.md)
+
 ## Development
 
 Packages are installed and tested independently, each with its own lockfile and checks.
@@ -41,4 +48,4 @@ npm run typecheck
 npm test
 ```
 
-CI checks each package independently. Cheapskate's workflow also publishes its patch releases. [Cheapskate workflow](.github/workflows/release.yml) · [Devices workflow](.github/workflows/devices.yml)
+CI checks each package independently. Cheapskate's workflow also publishes its patch releases. [Cheapskate workflow](.github/workflows/release.yml) · [Devices workflow](.github/workflows/devices.yml) · [Storybook workflow](.github/workflows/storybook.yml)
