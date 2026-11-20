@@ -123,7 +123,10 @@ test("reports missing or invalid addon responses at the root of the selected ori
 test("tools capture the owning agent, preserve existing tools, and pin an in-flight review", async () => {
   let open!: (payload: PluginHookPayload<"agent.open.before">, context: PluginHookContext) => Promise<PluginHookResult<"agent.open.before">>;
   const cleanup = contribute({
-    addHook(_name: string, handler: typeof open) { open = handler; return () => {}; },
+    addHook(name: string, handler: typeof open) {
+      if (name === "agent.open.before") open = handler;
+      return () => {};
+    },
     handle() {},
   } as unknown as PluginServerContext);
   const existingTool = { name: "existing", description: "Existing tool", input: {} } as PluginSessionOpenRequest["tools"][number];

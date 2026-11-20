@@ -9,6 +9,24 @@ export const selectStoryInput = z.object({ url: storybookUrl, storyId: id });
 const story = z.object({ id, title: z.string(), name: z.string(), storyUrl: z.string() });
 export const storyList = z.object({ url: storybookUrl, stories: z.array(story) });
 const workspace = z.object({ workspaceId: id });
+export const startServerInput = z.object({
+  command: z.string().trim().min(1),
+  args: z.array(z.string()),
+  cwd: z.string().optional(),
+}).refine(({ args }) => args.flatMap((arg) => [...arg.matchAll(/\{port\}/g)]).length === 1, {
+  path: ["args"],
+  message: "Include exactly one {port} placeholder in the Storybook arguments.",
+});
+export type StartServerInput = z.infer<typeof startServerInput>;
+const serverStatus = z.object({
+  state: z.enum(["idle", "starting", "ready", "stopping", "failed"]),
+  url: storybookUrl.optional(),
+  error: z.string().optional(),
+});
+export type ServerStatus = z.infer<typeof serverStatus>;
+export const serverStatusRpc = defineRpc({ name: "server.status", input: workspace, output: serverStatus });
+export const stopServerRpc = defineRpc({ name: "server.stop", input: workspace, output: serverStatus });
+
 const owner = workspace.extend({ agentId: id });
 const targetIdentity = owner.extend(selectStoryInput.shape);
 export const reviewTarget = targetIdentity.extend(story.omit({ id: true }).shape);

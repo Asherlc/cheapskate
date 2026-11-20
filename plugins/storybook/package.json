@@ -20,6 +20,7 @@
     "index.server.ts",
     "client/*.ts",
     "client/*.tsx",
+    "server/managed-storybook.ts",
     "server/storybook.ts",
     "shared/*.ts"
   ],

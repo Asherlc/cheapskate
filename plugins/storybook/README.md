@@ -1,6 +1,6 @@
 # Storybook for Paseo
 
-Choose a story from an agent or the Storybook panel in a conversation. Annotate the canvas in Storybook using Canvas Comments, then add the open notes, selectors, DOM context, and replies to the owning conversation draft.
+Have an agent start your project's Storybook, then choose a story from the agent or the Storybook panel. Annotate the canvas with Canvas Comments and add the open notes, selectors, DOM context, and replies to the owning conversation draft.
 
 ## Install
 
@@ -16,7 +16,24 @@ In your Storybook project, install Canvas Comments as a dev dependency. Use Stor
 npm install -D storybook-addon-canvas-comments
 ```
 
-Add `"storybook-addon-canvas-comments"` to the existing `addons` array in `.storybook/main.ts` and restart the Storybook development server. Paseo reads the story index and the addon's default API at `/__canvas-comments/comments` on the same origin. This integration requires the default Vite API. Custom `apiUrl` overrides and hosted Canvas Comments APIs require a different integration. [Canvas Comments setup and controls](https://storybook.js.org/addons/storybook-addon-canvas-comments)
+Add `"storybook-addon-canvas-comments"` to the existing `addons` array in `.storybook/main.ts` and restart Storybook if it is already running. Paseo reads the story index and the addon's default API at `/__canvas-comments/comments` on the same origin. This integration requires the default Vite API. Custom `apiUrl` overrides and hosted Canvas Comments APIs require a different integration. [Canvas Comments setup and controls](https://storybook.js.org/addons/storybook-addon-canvas-comments)
+
+## Run Storybook from Paseo
+
+Ask the agent in your workspace to start Storybook. It calls `storybook_start` with the project's executable and arguments. Use one `{port}` placeholder, which the plugin replaces with an available port. For an npm project whose `storybook` script runs `storybook dev`, the tool input looks like this.
+
+```json
+{
+  "command": "npm",
+  "args": ["run", "storybook", "--", "--host", "127.0.0.1", "--port", "{port}", "--exact-port", "--ci"]
+}
+```
+
+The command runs as the Paseo daemon's OS user on macOS or Linux, starting in the agent's checkout. The optional `cwd` selects a subdirectory of that checkout. Install your project's Storybook dependencies before launching. [Storybook CLI options](https://storybook.js.org/docs/api/cli-options)
+
+The plugin keeps one server running per workspace, independently of the agent's turn and background tasks. The Storybook panel picks up the URL when the story index is ready. The agent can also call `storybook_status` to get the URL. Use **Stop Storybook** in the panel or ask the agent to call `storybook_stop`. Archiving the workspace or stopping or reloading the plugin also stops the managed process.
+
+## Use an existing server
 
 Use a URL reachable by both your Paseo daemon, which reads the index and comments, and your Paseo client or browser, which opens the story. `localhost` refers to the machine making each request. With a remote daemon or mobile client, use a shared network address or forwarded URL reachable from both.
 

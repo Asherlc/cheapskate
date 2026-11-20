@@ -2,7 +2,10 @@ import { useAgent, useRpc, type PluginAgentPanelProps, type PluginClientContext 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Linking, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { getTargetRpc, listStoriesRpc, readFeedbackRpc, selectStoryRpc, type ReviewFeedback, type ReviewTarget } from "../shared/contracts";
+import {
+  getTargetRpc, listStoriesRpc, readFeedbackRpc, selectStoryRpc, serverStatusRpc, stopServerRpc,
+  type ReviewFeedback, type ReviewTarget, type ServerStatus,
+} from "../shared/contracts";
 import { appendFeedbackToDraft } from "./draft";
 
 function panelStyles({ theme: { colors }, layout: { compact } }: PluginAgentPanelProps) {
@@ -20,6 +23,13 @@ function panelStyles({ theme: { colors }, layout: { compact } }: PluginAgentPane
 
 type Styles = ReturnType<typeof panelStyles>;
 type PanelProps = PluginAgentPanelProps & { client: PluginClientContext };
+const serverLabels: Record<ServerStatus["state"], string> = {
+  idle: "Ask your agent to start Storybook.",
+  starting: "Starting Storybook…",
+  ready: "Storybook is running.",
+  stopping: "Stopping Storybook…",
+  failed: "Storybook failed to run.",
+};
 
 function Action({ text, onPress, disabled, styles }: {
   text: string;
@@ -99,8 +109,22 @@ export function StorybookPanel(panel: PanelProps) {
   const getTarget = useRpc(getTargetRpc);
   const listStories = useRpc(listStoriesRpc);
   const selectStory = useRpc(selectStoryRpc);
+  const serverStatus = useRpc(serverStatusRpc);
+  const stopServer = useRpc(stopServerRpc);
   const queryClient = useQueryClient();
   const targetKey = ["storybook", host.id, workspaceId];
+  const serverKey = [...targetKey, "server"];
+  const server = useQuery({
+    queryKey: serverKey,
+    queryFn: () => serverStatus({ workspaceId }),
+    refetchInterval: 2500,
+    retry: false,
+  });
+  const stop = useMutation({
+    mutationFn: () => stopServer({ workspaceId }),
+    onMutate: () => queryClient.cancelQueries({ queryKey: serverKey }),
+    onSuccess: (status) => { queryClient.setQueryData(serverKey, status); },
+  });
   const review = useQuery({
     queryKey: targetKey,
     queryFn: () => getTarget({ workspaceId }),
@@ -110,19 +134,38 @@ export function StorybookPanel(panel: PanelProps) {
   });
   const [enteredUrl, setEnteredUrl] = useState<string>();
   const [query, setQuery] = useState("");
-  const url = enteredUrl ?? review.data?.url ?? "";
+  const managedUrl = server.data?.state === "ready" ? server.data.url : undefined;
+  const url = enteredUrl ?? managedUrl ?? review.data?.url ?? "";
   const list = useMutation({ mutationFn: (url: string) => listStories({ url }) });
   const select = useMutation({
     mutationFn: selectStory,
     onSuccess: (target) => { queryClient.setQueryData(targetKey, target); },
   });
   const search = query.trim().toLowerCase();
-  const stories = list.data?.stories.filter(({ title, name, id }) => `${title} ${name} ${id}`.toLowerCase().includes(search));
+  const listing = list.variables === url ? list.data : undefined;
+  const stories = listing?.stories.filter(({ title, name, id }) => `${title} ${name} ${id}`.toLowerCase().includes(search));
   const busy = list.isPending || select.isPending;
   const target = review.data;
+  const state = server.data?.state;
 
   return (
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.body} style={{ backgroundColor: theme.colors.surface0 }}>
+      <View style={styles.card}>
+        <View style={styles.row}>
+          <Text accessibilityLiveRegion="polite" style={styles.muted}>
+            {stop.isPending ? serverLabels.stopping : state ? serverLabels[state] : "Checking Storybook server…"}
+          </Text>
+          {(state === "starting" || state === "ready" || state === "failed") && (
+            <Action text="Stop Storybook" onPress={() => stop.mutate()} disabled={stop.isPending} styles={styles} />
+          )}
+        </View>
+        {managedUrl && <Text selectable style={styles.muted}>{managedUrl}</Text>}
+        {(stop.error || server.error || server.data?.error) && (
+          <Text accessibilityRole="alert" selectable style={styles.text}>
+            {stop.error?.message ?? server.error?.message ?? server.data?.error}
+          </Text>
+        )}
+      </View>
       <View style={styles.row}>
         <Action text={review.isFetching ? "Checking selection…" : "Refresh selection"} onPress={() => { void review.refetch(); }} disabled={review.isFetching || select.isPending} styles={styles} />
       </View>
@@ -144,13 +187,13 @@ export function StorybookPanel(panel: PanelProps) {
       />
       <View style={styles.row}>
         <Action text={list.isPending ? "Listing stories…" : "List stories"} onPress={() => {
-          setEnteredUrl(url);
+          if (url !== managedUrl) setEnteredUrl(url);
           list.mutate(url);
         }} disabled={busy || !url.trim()} styles={styles} />
       </View>
-      {list.error && <Text accessibilityRole="alert" style={styles.text}>{list.error.message}</Text>}
+      {list.variables === url && list.error && <Text accessibilityRole="alert" style={styles.text}>{list.error.message}</Text>}
       {select.error && <Text accessibilityRole="alert" style={styles.text}>{select.error.message}</Text>}
-      {list.data && (
+      {listing && (
         <>
           <TextInput accessibilityLabel="Search stories" value={query} onChangeText={setQuery} placeholder="Search stories" placeholderTextColor={theme.colors.foregroundMuted} style={styles.field} />
           {stories?.length === 0 && <Text style={styles.muted}>No matching stories.</Text>}
@@ -160,7 +203,7 @@ export function StorybookPanel(panel: PanelProps) {
               text={`${story.title} / ${story.name}`}
               disabled={busy || review.isFetching}
               onPress={() => {
-                if (list.data) select.mutate({ workspaceId, agentId, url: list.data.url, storyId: story.id });
+                select.mutate({ workspaceId, agentId, url: listing.url, storyId: story.id });
               }}
               styles={styles}
             />

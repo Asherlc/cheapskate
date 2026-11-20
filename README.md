@@ -21,7 +21,7 @@ iOS simulators and Android emulators per workspace, with a live view and agent t
 
 ### Storybook
 
-Select a Storybook story for review and bring Canvas Comments annotations into the owning conversation draft.
+Run Storybook per workspace, select a story for review, and bring Canvas Comments into the conversation draft.
 
 - Install from Git with `paseo plugin install git:Asherlc/paseo-plugins:plugins/storybook`.
 - [Storybook documentation](plugins/storybook/README.md)

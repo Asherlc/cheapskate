@@ -1,7 +1,7 @@
 {
   "id": "storybook",
   "name": "Storybook",
-  "description": "Select Storybook stories and bring Canvas Comments annotations into the owning conversation draft.",
+  "description": "Run Storybook per workspace, select stories, and bring Canvas Comments into the conversation draft.",
   "requirements": {
     "paseo": ">=0.16.2"
   }
