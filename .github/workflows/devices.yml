@@ -7,6 +7,7 @@ on:
       - '.github/workflows/devices.yml'
   push:
     branches: [main]
+    tags: ['devices-v*']
     paths:
       - 'plugins/devices/**'
       - '.github/workflows/devices.yml'
@@ -33,3 +34,50 @@ jobs:
         working-directory: plugins/devices
       - run: npm pack --dry-run --ignore-scripts
         working-directory: plugins/devices
+
+  marketplace:
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/devices-v'))
+    needs: check-devices
+    runs-on: ubuntu-latest
+    concurrency:
+      group: devices-marketplace-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Submit this Devices revision to the Paseo marketplace
+        env:
+          GH_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
+          GH_REPO: getpaseo/plugins
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo '::error::Set the MARKETPLACE_TOKEN repository secret to a GitHub personal access token with public_repo scope. Then rerun failed jobs.'
+            exit 1
+          fi
+
+          title="Devices $GITHUB_SHA marketplace update"
+          existing=$(gh issue list --state all --search "$title in:title" \
+            --json title,url --jq ".[] | select(.title == \"$title\") | .url")
+          if [ -n "$existing" ]; then
+            echo "Already submitted: $existing"
+            exit 0
+          fi
+
+          cat > "$RUNNER_TEMP/submission.md" <<EOF
+          ### Source
+
+          https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA/plugins/devices
+
+          ### Notes
+
+          Submit this revision for the asherlc/devices listing.
+          CI passed typechecking, tests, and the package dry run for this source revision.
+          Upstream credit: Devices by Zed Obaia, MIT licensed, https://github.com/ZedObaia/paseo-plugins
+
+          ### Categories
+
+          - [x] Workspaces
+          - [x] Utils
+          EOF
+
+          # Registry intake recognizes the Source section and adds its submission label.
+          gh issue create --title "$title" --body-file "$RUNNER_TEMP/submission.md"
