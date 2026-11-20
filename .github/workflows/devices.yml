@@ -1,0 +1,35 @@
+name: Devices CI
+
+on:
+  pull_request:
+    paths:
+      - 'plugins/devices/**'
+      - '.github/workflows/devices.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/devices/**'
+      - '.github/workflows/devices.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-devices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugins/devices/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: plugins/devices
+      - run: npm run typecheck
+        working-directory: plugins/devices
+      - run: npm test
+        working-directory: plugins/devices
+      - run: npm pack --dry-run --ignore-scripts
+        working-directory: plugins/devices

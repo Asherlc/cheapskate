@@ -58,7 +58,7 @@ paseo plugin reload cheapskate
 ## CI and releases
 
 GitHub Actions runs typechecking, tests, and a package dry run on pull requests and
-pushes to `main`. Each passing push to `main` automatically increments the patch
+pushes to `main` that change Cheapskate or its release workflow. Each passing push of those changes automatically increments the patch
 version in `package.json` and `package-lock.json`, pushes a `v` tag, and publishes
 a GitHub release with generated notes. The version commit uses `[skip ci]` to
 avoid starting another release. Do not bump the version manually for patch releases.

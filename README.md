@@ -1,6 +1,6 @@
 # Paseo plug-ins
 
-A collection of [Paseo](https://paseo.sh) plug-ins. Each package is independent, with its own manifest, version, docs, and release. Install only the ones you want.
+A collection of independently installable [Paseo](https://paseo.sh) plug-ins.
 
 ## Packages
 
@@ -8,18 +8,22 @@ A collection of [Paseo](https://paseo.sh) plug-ins. Each package is independent,
 
 One selectable Paseo model backed by an ordered fallback chain. When a backend hits a quota or rate limit, Cheapskate continues in the same chat with the next model.
 
-- Source: [`plugins/cheapskate/`](plugins/cheapskate/)
-- Docs: [README](plugins/cheapskate/README.md) · [overview](plugins/cheapskate/OVERVIEW.md)
-- Install (registry): `paseo plugin install asherlc/cheapskate`
-- Install (Git): `paseo plugin install git:Asherlc/paseo-plugins:plugins/cheapskate`
+- Install from the registry with `paseo plugin install asherlc/cheapskate`.
+- Install from Git with `paseo plugin install git:Asherlc/paseo-plugins:plugins/cheapskate`.
+- [Cheapskate documentation](plugins/cheapskate/README.md)
 
-### Devices — planned
+### Devices
 
-Simulator annotations for Paseo, at `plugins/devices/`. Not released yet.
+iOS simulators and Android emulators per workspace, with a live view and agent tools. Capture and annotate iOS simulator screenshots from the Device panel.
+
+- Install from Git with `paseo plugin install git:Asherlc/paseo-plugins:plugins/devices`.
+- [Devices documentation and upstream attribution](plugins/devices/README.md)
 
 ## Development
 
-Packages are installed and tested independently. For Cheapskate:
+Packages are installed and tested independently, each with its own lockfile and checks.
+
+For Cheapskate:
 
 ```sh
 cd plugins/cheapskate
@@ -28,4 +32,13 @@ npm run typecheck
 npm test
 ```
 
-Releases are automated per package from [`.github/workflows/release.yml`](.github/workflows/release.yml); a change under one package does not bump another.
+For Devices:
+
+```sh
+cd plugins/devices
+npm ci
+npm run typecheck
+npm test
+```
+
+CI checks each package independently. Cheapskate's workflow also publishes its patch releases. [Cheapskate workflow](.github/workflows/release.yml) · [Devices workflow](.github/workflows/devices.yml)
