@@ -6,17 +6,21 @@ import {
   createRpc,
   frameRpc,
   inputRpc,
+  listPreviewsRpc,
   listRpc,
+  openPreviewRpc,
   powerRpc,
   type Device,
 } from "./shared/contracts";
 import { MAX_PIXELS } from "./shared/annotation";
+import { CATALOG_GUIDANCE, type PreviewStatus } from "./shared/previews";
 import * as android from "./server/android";
-import { PICKER_SOCKET, injectDeviceTools, syncAgentConfigs } from "./server/agents";
+import { PICKER_SOCKET, claimPreviewTarget, injectDeviceTools, syncAgentConfigs } from "./server/agents";
 import { saveAnnotation } from "./server/annotations";
 import { encode, forget, type Frame } from "./server/frames";
 import { stopImageHelper } from "./server/images";
 import * as ios from "./server/ios";
+import { openPreview as startPreview, previewsFor, previewStatusDevice } from "./server/previews";
 import { servePicker, type Picker } from "./server/picker";
 import {
   addAssignment,
@@ -37,6 +41,22 @@ type Platform = { available: boolean; reason: string };
 type Listed = Omit<Device, "owned" | "agentTools" | "error">;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const previewStatusText = (status: PreviewStatus) => {
+  if (status.state === "idle") return "no preview launched yet";
+  if (status.state === "building") return `building ${status.previewId}…`;
+  if (status.state === "opened") return `opened ${status.previewId}`;
+  return `error on ${status.previewId}: ${status.error}`;
+};
+
+// UI previews use the workspace directory from the assignment matching the workspace and device
+const previewDirectory = (workspaceId: string, deviceId?: string) => {
+  const assignment = deviceId
+    ? assignments().find((a) => a.workspaceId === workspaceId && a.deviceId === deviceId)
+    : targetOf(workspaceId);
+  if (!assignment) throw new Error("Add a device to this workspace first");
+  return assignment.directory;
+};
 
 // Boots run in the background (they outlast the client's 60 s RPC timeout); the list reports them.
 const booting = new Map<string, Promise<void>>();
@@ -221,7 +241,7 @@ export default function contribute(server: PluginServerContext) {
     syncAgentConfigs().catch((error) => console.error("syncing agent-device configs:", error)),
   );
   const stopReaper = ios.startIdleReaper();
-  injectDeviceTools(server, ready);
+  const stopDeviceTools = injectDeviceTools(server, ready);
 
   // Agents switch between their workspace's devices, or take a free one the user allowed agents on
   const picker: Picker = {
@@ -245,7 +265,7 @@ export default function contribute(server: PluginServerContext) {
         })
         .join("\n");
     },
-    async use(workspace, deviceId) {
+    async use(workspace, deviceId, agentId) {
       await ready;
       const listed = (await listDevices()).devices;
       const device = withStatus(listed).find((d) => d.id === deviceId);
@@ -258,7 +278,7 @@ export default function contribute(server: PluginServerContext) {
         throw new Error(`The user hasn't allowed agents on ${device.name}; they do that in the Device panel`);
       // another workspace's device stays theirs
       await addAssignment(workspace, deviceId, false);
-      await setTarget(workspace.workspaceId, deviceId);
+      await setTarget(workspace.workspaceId, deviceId, agentId);
       // a USB phone that's offline can't be turned on from here
       if (device.state === "shutdown" && device.kind !== "physical") boot(deviceId);
       await syncAgentConfigs();
@@ -266,6 +286,26 @@ export default function contribute(server: PluginServerContext) {
       return device.state === "booted"
         ? `The device tools drive ${device.name} now`
         : `The device tools drive ${device.name} now; they reach it once it's on`;
+    },
+    async listPreviews(workspace, deviceId) {
+      await ready;
+      const device = previewStatusDevice(workspace.workspaceId, deviceId);
+      const { catalog, status } = await previewsFor(workspace.directory, device);
+      const lines = [`Previews in ${workspace.workspaceName}:`];
+      if (!catalog?.previews.length) lines.push(CATALOG_GUIDANCE);
+      else for (const preview of catalog.previews) lines.push(`  ${preview.id} — ${preview.title}`);
+      lines.push(`Status (${device ?? "no selected device"}): ${previewStatusText(status)}`);
+      lines.push("After open_preview, call list_previews and wait for opened before driving the device.");
+      return lines.join("\n");
+    },
+    async openPreview(workspace, previewId, deviceId, agentId) {
+      await ready;
+      const device = deviceId ?? targetOf(workspace.workspaceId)?.deviceId;
+      if (!device) throw new Error("No device is selected; call use_device first");
+      const { status } = await startPreview(workspace.directory, workspace.workspaceId, previewId, device, true);
+      // the start is valid: point the tools at this simulator and route annotations to the claiming chat
+      await claimPreviewTarget(workspace.workspaceId, device, agentId);
+      return `Building ${previewId} on ${device} (${status.state}). Call list_previews and wait for opened before interacting.`;
     },
   };
   const stopPicker = servePicker(PICKER_SOCKET, picker);
@@ -302,6 +342,25 @@ export default function contribute(server: PluginServerContext) {
     // agents already running read their workspace's file on every call
     await syncAgentConfigs();
     return { message: allow ? "Agents in its workspace can drive it" : "Agents can't drive it any more" };
+  });
+
+  server.handle(listPreviewsRpc, async ({ workspaceId, deviceId }) => {
+    await ready;
+    const device = deviceId ?? targetOf(workspaceId)?.deviceId;
+    const { catalog, status } = await previewsFor(previewDirectory(workspaceId, device), device);
+    return { previews: catalog?.previews ?? [], status, guidance: catalog ? null : CATALOG_GUIDANCE };
+  });
+
+  server.handle(openPreviewRpc, async ({ workspaceId, deviceId, previewId }) => {
+    await ready;
+    const { status } = await startPreview(
+      previewDirectory(workspaceId, deviceId),
+      workspaceId,
+      previewId,
+      deviceId,
+      false,
+    );
+    return { message: `Building ${previewId}`, status };
   });
 
   // An archived workspace gives its devices back. One made for it ("New copy") is turned off, not
@@ -378,12 +437,13 @@ export default function contribute(server: PluginServerContext) {
     }
   });
 
-  server.handle(annotateRpc, async ({ deviceId, jpeg, width, height, marks, workspaceId }) => {
+  server.handle(annotateRpc, async ({ deviceId, jpeg, width, height, marks, workspaceId, agentId }) => {
     await ready;
     if (!deviceId.startsWith("ios:")) throw new Error("Annotations are for iOS simulators");
-    // a panel a poll behind mustn't save another workspace's device into this one's draft
-    if (holderOf(deviceId)?.workspaceId !== workspaceId)
-      throw new Error("That device isn't in this workspace");
+    // a panel a poll behind mustn't save a device another chat now owns into this one's draft
+    const holder = holderOf(deviceId);
+    if (holder?.workspaceId !== workspaceId || holder.agentId !== agentId)
+      throw new Error("That device isn't in this chat any more");
     if (width * height > MAX_PIXELS) throw new Error("The screenshot is too large");
     const path = await saveAnnotation(Buffer.from(jpeg, "base64"), width, height, marks);
     return { path, message: "Screenshot saved" };
@@ -409,6 +469,7 @@ export default function contribute(server: PluginServerContext) {
   });
 
   return () => {
+    stopDeviceTools();
     stopReaper();
     stopPicker();
     stopImageHelper();

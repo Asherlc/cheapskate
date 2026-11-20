@@ -1,6 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { markSchema, MAX_JPEG_CHARS, MAX_MARKS, MAX_SIDE } from "./annotation";
+import { previewStatus } from "./previews";
 
 const platformSchema = z.enum(["ios", "android"]);
 
@@ -35,6 +36,9 @@ const assignment = z.object({
   workspaceName: z.string(),
   directory: z.string(),
   deviceId,
+  // the agent that last chose this device with use_device; annotations go to its chat.
+  // absent on assignments saved before this existed, which are therefore unclaimed.
+  agentId: z.string().optional(),
 });
 export type Assignment = z.infer<typeof assignment>;
 
@@ -124,6 +128,9 @@ export const annotateRpc = defineRpc({
   name: "devices.annotate",
   input: workspace.extend({
     deviceId,
+    // the owner pinned when the screenshot was captured: the RPC refuses a device whose
+    // owner has changed since, so an annotation can't land in another chat's draft.
+    agentId: z.string(),
     jpeg: z.string().min(1).max(MAX_JPEG_CHARS).regex(/^[A-Za-z0-9+/]+={0,2}$/),
     width: z.number().int().min(1).max(MAX_SIDE),
     height: z.number().int().min(1).max(MAX_SIDE),
@@ -153,4 +160,22 @@ export const inputRpc = defineRpc({
     ]),
   }),
   output: z.object({ ok: z.literal(true) }),
+});
+
+/** The configured preview states and the launch status of the selected simulator. */
+export const listPreviewsRpc = defineRpc({
+  name: "devices.list-previews",
+  input: z.object({ workspaceId: z.string().min(1), deviceId: deviceId.optional() }),
+  output: z.object({
+    previews: z.array(z.object({ id: z.string(), title: z.string() })),
+    status: previewStatus,
+    guidance: z.string().nullable(),
+  }),
+});
+
+/** Builds and launches a named preview; returns while the background build is still running. */
+export const openPreviewRpc = defineRpc({
+  name: "devices.open-preview",
+  input: z.object({ workspaceId: z.string().min(1), deviceId, previewId: z.string().min(1) }),
+  output: z.object({ message: z.string(), status: previewStatus }),
 });

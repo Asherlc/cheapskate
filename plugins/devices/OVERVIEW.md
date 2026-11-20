@@ -73,5 +73,12 @@ The picture is a stream of still frames, several per second, not video.
 
 On a booted iOS simulator, open **More actions → Annotate** to capture the current screen. Tap to
 place a numbered point or drag to place a box. Add a comment to each mark and press **Add to draft**.
-Choose a chat if the workspace has more than one. Paseo saves a marked JPEG in the plug-in's private
-data folder and adds its path and comments to that chat's draft for you to review and send.
+Paseo saves a marked JPEG in the plug-in's private data folder and adds its path and comments to the
+draft of the chat whose agent last claimed that simulator with the devices picker's `use_device`. If
+no chat has claimed it yet, have that chat select the simulator with `use_device` first. Nothing is
+sent: you review the draft and press Send yourself.
+
+On a booted iOS simulator, **More actions → Previews** lists named states from the workspace's
+`paseo-previews.json`: a separate SwiftUI preview app and its Xcode scheme. Choose one to build and
+launch it in that simulator. Agents you've allowed on the simulator can list and open the same states
+there with their device tools.

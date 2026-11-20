@@ -1,5 +1,5 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { useAgent, useAgents, useComposers, useRpc, type AgentRef } from "@getpaseo/plugin/client";
+import { useComposers, useRpc } from "@getpaseo/plugin/client";
 import { Modal, TextInput, useToast } from "@getpaseo/plugin/client/ui";
 import { useRef, useState } from "react";
 import { Image, type GestureResponderEvent, type LayoutChangeEvent, Text, useWindowDimensions, View } from "react-native";
@@ -9,53 +9,41 @@ import { useAction } from "./data";
 import { Button } from "./ui";
 
 type Workspace = { workspaceId: string; workspaceName: string; directory: string };
-type Shot = { jpeg: string; width: number; height: number };
+type Shot = { jpeg: string; width: number; height: number; agentId?: string };
 type Point = { x: number; y: number };
 type Tool = "point" | "box";
 
 /**
  * Grabs one frame of a booted simulator, lets the user place numbered points and boxes on it,
- * then saves the marked copy and appends its path plus the comments to a chat's draft. Nothing is
+ * then saves the marked copy and appends its path plus the comments to the owning chat's draft. Nothing is
  * sent: the user reviews the draft and presses Send themselves.
  */
-export function Annotate({ theme, hostId, device, workspace }: {
+export function Annotate({ theme, hostId, device, workspace, agentId }: {
   theme: PluginTheme;
   hostId: string;
   device: Device;
   workspace: Workspace;
+  agentId?: string;
 }) {
   const frame = useRpc(frameRpc);
   const save = useRpc(annotateRpc);
   const { busy, perform } = useAction(hostId);
   const toast = useToast();
-  const agents = useAgents({
-    hosts: [hostId],
-    where: (agent) =>
-      agent.workspaceId === workspace.workspaceId && !agent.background && agent.status !== "closed",
-  });
   const [shot, setShot] = useState<Shot | null>(null);
   const [marks, setMarks] = useState<Mark[]>([]);
   const [tool, setTool] = useState<Tool>("point");
-  const [chosen, setChosen] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [adding, setAdding] = useState(false);
   const c = theme.colors;
 
-  const needsChoice = agents.length > 1;
-  // With one eligible agent it is the default; with several the user must pick one explicitly.
-  const selectedId = needsChoice
-    ? agents.some((agent) => agent.id === chosen)
-      ? chosen
-      : null
-    : (agents[0]?.id ?? null);
-  // Reactive, per host: no global client binding, and a fresh resolution on every render.
-  const composers = useComposers({ agentId: selectedId ?? "" });
+  // The owner is pinned when the frame is captured: a claim changing mid-annotation must not send
+  // the notes to a different chat. Reactive, per host: no global client binding.
+  const composers = useComposers({ agentId: shot?.agentId ?? "" });
 
   function reset() {
     setShot(null);
     setMarks([]);
     setTool("point");
-    setChosen(null);
   }
 
   async function capture() {
@@ -66,7 +54,7 @@ export function Annotate({ theme, hostId, device, workspace }: {
         toast.error(result.status === "unavailable" ? result.reason : "No picture yet");
         return;
       }
-      setShot({ jpeg: result.jpeg, width: result.width, height: result.height });
+      setShot({ jpeg: result.jpeg, width: result.width, height: result.height, agentId });
       setMarks([]);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -81,7 +69,8 @@ export function Annotate({ theme, hostId, device, workspace }: {
   const add = (mark: Mark) => setMarks((current) => (current.length >= MAX_MARKS ? current : [...current, mark]));
 
   async function addToDraft() {
-    if (!shot || !selectedId || !marks.length || adding || capturing || busy) return;
+    const owner = shot?.agentId;
+    if (!shot || !owner || !marks.length || adding || capturing || busy) return;
     setAdding(true);
     try {
       const saved = await perform(
@@ -89,6 +78,7 @@ export function Annotate({ theme, hostId, device, workspace }: {
           save({
             ...workspace,
             deviceId: device.id,
+            agentId: owner,
             jpeg: shot.jpeg,
             width: shot.width,
             height: shot.height,
@@ -122,7 +112,7 @@ export function Annotate({ theme, hostId, device, workspace }: {
     }
   }
 
-  const canAdd = Boolean(shot && selectedId && marks.length && !adding && !capturing && !busy);
+  const canAdd = Boolean(shot?.agentId && marks.length && !adding && !capturing && !busy);
   return (
     <>
       <Button
@@ -210,23 +200,10 @@ export function Annotate({ theme, hostId, device, workspace }: {
               ) : (
                 <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>No marks yet.</Text>
               )}
-              {needsChoice ? (
-                <View style={{ gap: 6 }}>
-                  <Text style={{ color: c.foreground, fontSize: 13 }}>Add to which chat's draft?</Text>
-                  {agents.map((agent) => (
-                    <AgentChoice
-                      key={agent.id}
-                      ref={agent}
-                      theme={theme}
-                      active={chosen === agent.id}
-                      onPress={() => setChosen(agent.id)}
-                    />
-                  ))}
-                </View>
-              ) : null}
-              {!agents.length ? (
+              {shot && !shot.agentId ? (
                 <Text style={{ color: c.statusWarning, fontSize: 12 }}>
-                  Start an agent in this workspace first, so there's a draft to add it to.
+                  No chat owns this simulator yet. In the chat that should receive it, select this
+                  simulator with the devices picker's use_device, then capture again.
                 </Text>
               ) : null}
               <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
@@ -244,19 +221,6 @@ export function Annotate({ theme, hostId, device, workspace }: {
         </Modal.Content>
       </Modal>
     </>
-  );
-}
-
-/** `useAgent` can only run for one ref at a time, so each row reads its own title. */
-function AgentChoice({ ref, theme, active, onPress }: {
-  ref: AgentRef;
-  theme: PluginTheme;
-  active: boolean;
-  onPress(): void;
-}) {
-  const title = useAgent(ref, (agent) => agent.title ?? agent.id);
-  return (
-    <Button theme={theme} label={title ?? ref.id} primary={active} onPress={onPress} />
   );
 }
 

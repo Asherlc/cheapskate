@@ -8,7 +8,9 @@ export type Workspace = Omit<Assignment, "deviceId">;
 /** What an agent can do: see the devices it may use, switch between its workspace's, take a free one. */
 export interface Picker {
   list(workspace: Workspace): Promise<string>;
-  use(workspace: Workspace, deviceId: string): Promise<string>;
+  use(workspace: Workspace, deviceId: string, agentId?: string): Promise<string>;
+  listPreviews(workspace: Workspace, deviceId?: string): Promise<string>;
+  openPreview(workspace: Workspace, previewId: string, deviceId?: string, agentId?: string): Promise<string>;
 }
 
 const TOOLS = [
@@ -29,18 +31,44 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "list_previews",
+    description:
+      "Lists the named SwiftUI previews configured in the workspace's paseo-previews.json and the launch status (building/opened/error) of the selected booted iOS simulator. A missing catalog returns setup guidance. After open_preview, call this and wait for the opened status before driving the preview with the device tools.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deviceId: { type: "string", description: "Optional; defaults to the device the tools drive" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "open_preview",
+    description:
+      "Builds and launches a named SwiftUI preview on a booted iOS simulator assigned to this workspace, foregrounding the app. Requires an id from list_previews; an optional deviceId defaults to the device the tools drive. Returns immediately while the build runs: call list_previews and wait for opened before interacting. Agent tools must be allowed on the simulator.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        previewId: { type: "string", description: "An id from list_previews" },
+        deviceId: { type: "string", description: "Optional; defaults to the device the tools drive" },
+      },
+      required: ["previewId"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 type Message = {
   id?: string | number | null;
   method?: string;
-  params?: { name?: string; arguments?: { deviceId?: unknown } };
+  params?: { name?: string; arguments?: { deviceId?: unknown; previewId?: unknown } };
 };
 
 const text = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** The answer to one MCP message from an agent in `workspace`; null for a notification. */
-export async function reply(message: Message, workspace: Workspace, picker: Picker) {
+export async function reply(message: Message, workspace: Workspace, picker: Picker, agentId?: string) {
   if (message.id === undefined) return null;
   const result = (value: object) => ({ jsonrpc: "2.0", id: message.id, result: value });
   switch (message.method) {
@@ -58,9 +86,15 @@ export async function reply(message: Message, workspace: Workspace, picker: Pick
       const { name, arguments: args } = message.params ?? {};
       try {
         let answer: string;
+        const device = args?.deviceId ? String(args.deviceId) : undefined;
         if (name === "list_devices") answer = await picker.list(workspace);
-        else if (name === "use_device") answer = await picker.use(workspace, String(args?.deviceId ?? ""));
-        else throw new Error(`Unknown tool ${name}`);
+        else if (name === "use_device") answer = await picker.use(workspace, device ?? "", agentId);
+        else if (name === "list_previews") answer = await picker.listPreviews(workspace, device);
+        else if (name === "open_preview") {
+          const previewId = args?.previewId ? String(args.previewId) : "";
+          if (!previewId) throw new Error("previewId is required; call list_previews for the available ids");
+          answer = await picker.openPreview(workspace, previewId, device, agentId);
+        } else throw new Error(`Unknown tool ${name}`);
         return result({ content: [{ type: "text", text: answer }] });
       } catch (error) {
         return result({ content: [{ type: "text", text: text(error) }], isError: true });
@@ -87,8 +121,10 @@ export function servePicker(socketPath: string, picker: Picker): () => void {
     req.on("end", async () => {
       let answer: object | null;
       try {
-        const workspace = new URL(req.url ?? "/", "http://picker").searchParams.get("workspace");
-        answer = await reply(JSON.parse(body) as Message, JSON.parse(workspace ?? "") as Workspace, picker);
+        const query = new URL(req.url ?? "/", "http://picker").searchParams;
+        const workspace = query.get("workspace");
+        const agentId = query.get("agent") || undefined;
+        answer = await reply(JSON.parse(body) as Message, JSON.parse(workspace ?? "") as Workspace, picker, agentId);
       } catch (error) {
         answer = { jsonrpc: "2.0", id: null, error: { code: -32700, message: text(error) } };
       }

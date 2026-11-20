@@ -113,10 +113,16 @@ export function targetOf(workspaceId: string): Assignment | undefined {
   return drivable.find((a) => a.deviceId === state.targets[workspaceId]) ?? drivable[0];
 }
 
-export async function setTarget(workspaceId: string, deviceId: string): Promise<void> {
+export async function setTarget(workspaceId: string, deviceId: string, agentId?: string): Promise<void> {
   // released, taken over or consent withdrawn since use_device began: it mustn't come back later
   if (holderOf(deviceId)?.workspaceId !== workspaceId || !agentToolsAllowed(deviceId)) return;
   state.targets[workspaceId] = deviceId;
+  if (agentId) {
+    // The latest explicit MCP claim wins on this exact assignment. Anonymous legacy calls leave
+    // an existing owner alone, and a release/takeover/delete removes owner and assignment together.
+    const assignment = state.assignments.find((a) => a.workspaceId === workspaceId && a.deviceId === deviceId);
+    if (assignment) assignment.agentId = agentId;
+  }
   await save();
 }
 

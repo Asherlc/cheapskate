@@ -1,12 +1,22 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ActivityIndicator, Platform, Text, View } from "react-native";
 import { inputRpc, type Assignment, type Device } from "../shared/contracts";
 import { splitDevices } from "../shared/select";
 import { Annotate } from "./annotate";
-import { canDuplicate, canTurnOff, canTurnOn, onFirst, useAction, useDeviceRpcs, useDevices } from "./data";
+import {
+  canDuplicate,
+  canTurnOff,
+  canTurnOn,
+  onFirst,
+  useAction,
+  useDeviceRpcs,
+  useDevices,
+  usePreviewRpcs,
+} from "./data";
 import { LiveScreen } from "./live";
 import { Button, Card, DeviceRow, IconButton, StatusLine } from "./ui";
 
@@ -38,6 +48,7 @@ export function DevicePanel({ theme, layout, host, workspaceId }: PluginWorkspac
     .filter((a) => a.workspaceId === workspaceId)
     .flatMap((a) => all.filter((d) => d.id === a.deviceId));
   const device = mine.find((d) => d.id === selected) ?? mine[0];
+  const owner = assignments.find((a) => a.workspaceId === workspaceId && a.deviceId === device?.id)?.agentId;
   const landscape = shape !== null && shape.deviceId === device?.id && shape.landscape;
   const picker = (
     <DevicePicker
@@ -81,6 +92,7 @@ export function DevicePanel({ theme, layout, host, workspaceId }: PluginWorkspac
             hostId={host.id}
             device={device}
             workspace={workspace}
+            agentId={owner}
             landscape={landscape}
             onAdd={() => setPicking(true)}
           />
@@ -188,6 +200,76 @@ function AgentTools({ theme, hostId, device }: { theme: PluginTheme; hostId: str
   );
 }
 
+/** Launches named SwiftUI previews on this simulator and shows the build/open/error status. */
+function Previews({
+  theme,
+  hostId,
+  device,
+  workspace,
+}: {
+  theme: PluginTheme;
+  hostId: string;
+  device: Device;
+  workspace: Workspace;
+}) {
+  const { listPreviews, openPreview } = usePreviewRpcs();
+  const { busy, perform } = useAction(hostId);
+  const [open, setOpen] = useState(false);
+  const c = theme.colors;
+  const query = useQuery({
+    queryKey: ["devices", hostId, "previews", workspace.workspaceId, device.id],
+    queryFn: () => listPreviews({ workspaceId: workspace.workspaceId, deviceId: device.id }),
+    enabled: open,
+    // a build outlasts one RPC: keep polling until it is no longer building
+    refetchInterval: (q) => (q.state.data?.status.state === "building" ? 1_000 : false),
+  });
+  const status = query.data?.status;
+  const statusText =
+    !status || status.state === "idle"
+      ? "No preview launched yet"
+      : status.state === "building"
+        ? `Building ${status.previewId}…`
+        : status.state === "opened"
+          ? `Opened ${status.previewId}`
+          : `Error on ${status.previewId}: ${status.error}`;
+
+  return (
+    <>
+      <Button theme={theme} icon="Sparkles" label="Previews" onPress={() => setOpen(true)} />
+      <Modal title="SwiftUI previews" open={open} onOpenChange={setOpen}>
+        <Modal.Content>
+          {query.data?.guidance ? (
+            <Text style={{ color: c.foregroundMuted, lineHeight: 20 }}>{query.data.guidance}</Text>
+          ) : null}
+          {query.data?.previews.map((preview) => (
+            <Button
+              key={preview.id}
+              theme={theme}
+              label={preview.title}
+              disabled={busy || status?.state === "building"}
+              onPress={() =>
+                void perform(() =>
+                  openPreview({
+                    workspaceId: workspace.workspaceId,
+                    deviceId: device.id,
+                    previewId: preview.id,
+                  }),
+                ).then((result) => {
+                  if (result) void query.refetch();
+                })
+              }
+            />
+          ))}
+          {query.isError ? <Text style={{ color: c.statusDanger }}>{String(query.error)}</Text> : null}
+          <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>
+            {statusText}. Use the live screen and device tools to interact.
+          </Text>
+        </Modal.Content>
+      </Modal>
+    </>
+  );
+}
+
 function BootButton({ theme, hostId, device }: { theme: PluginTheme; hostId: string; device: Device }) {
   const { power } = useDeviceRpcs();
   const { busy, perform } = useAction(hostId);
@@ -208,6 +290,7 @@ function Toolbar({
   hostId,
   device,
   workspace,
+  agentId,
   landscape,
   onAdd,
 }: {
@@ -215,6 +298,8 @@ function Toolbar({
   hostId: string;
   device: Device;
   workspace: Workspace;
+  // the agent that last claimed this device with use_device: where annotations go
+  agentId?: string;
   // from the last picture, so it is right after a remount too
   landscape: boolean;
   onAdd(): void;
@@ -288,7 +373,10 @@ function Toolbar({
       {more ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {on && device.platform === "ios" ? (
-            <Annotate theme={theme} hostId={hostId} device={device} workspace={workspace} />
+            <Annotate theme={theme} hostId={hostId} device={device} workspace={workspace} agentId={agentId} />
+          ) : null}
+          {on && device.platform === "ios" ? (
+            <Previews theme={theme} hostId={hostId} device={device} workspace={workspace} />
           ) : null}
           <Button theme={theme} icon="Plus" label="Add device" onPress={onAdd} />
           {canTurnOff(device) ? (

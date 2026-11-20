@@ -1,7 +1,7 @@
 {
   "id": "devices",
   "name": "Devices",
-  "description": "Live iOS and Android devices with simulator screenshot annotations and tools for agents.",
+  "description": "Live iOS and Android devices with named SwiftUI previews, simulator screenshot annotations, and tools for agents.",
   "icon": "assets/icon.png",
   "media": ["assets/hero.png", "assets/app.png", "assets/devices.png", "assets/phone.png"],
   "requirements": {

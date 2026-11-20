@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { before, test } from "node:test";
@@ -209,6 +209,8 @@ test("the picker answers an agent's MCP messages over stdio, in its own workspac
       used.push(`${w.workspaceId}:${id}`);
       return "ok";
     },
+    listPreviews: async () => "no previews",
+    openPreview: async () => "no preview",
   });
   const bridge = spawn(process.execPath, [path.join(import.meta.dirname, "picker-bridge.mjs")], {
     env: { PASEO_DEVICES_SOCKET: socket, PASEO_DEVICES_WORKSPACE: JSON.stringify(B) },
@@ -245,7 +247,7 @@ test("the picker answers an agent's MCP messages over stdio, in its own workspac
   assert.equal(answers[0].result.capabilities.tools !== undefined, true);
   assert.deepEqual(
     answers[1].result.tools.map((t: { name: string }) => t.name),
-    ["list_devices", "use_device"],
+    ["list_devices", "use_device", "list_previews", "open_preview"],
   );
   assert.equal(answers[2].result.content[0].text, "devices for Onboarding");
   assert.deepEqual(
@@ -253,4 +255,441 @@ test("the picker answers an agent's MCP messages over stdio, in its own workspac
     [true, "In use by Checkout"],
   );
   assert.deepEqual(used, ["b:ios:1"]);
+});
+
+test("two agents claim a device; legacy calls, wrong workspace and consent guards leave the owner", async () => {
+  await state.addAssignment(A, "ios:owner", false);
+  await state.addAssignment(A, "ios:other", false);
+  await state.allowAgentTools("ios:owner", true);
+  const owner = () => state.assignments().find((a) => a.deviceId === "ios:owner")?.agentId;
+
+  // an anonymous legacy use_device drives the device but claims no chat
+  await state.setTarget("a", "ios:owner");
+  assert.equal(owner(), undefined);
+
+  // the latest explicit claim on this exact assignment wins
+  await state.setTarget("a", "ios:owner", "agent-1");
+  assert.equal(owner(), "agent-1");
+  await state.setTarget("a", "ios:owner", "agent-2");
+  assert.equal(owner(), "agent-2");
+  // a claim on another device doesn't move this one's owner
+  await state.setTarget("a", "ios:other", "agent-3");
+  assert.equal(owner(), "agent-2");
+  // a legacy call doesn't erase the owner either
+  await state.setTarget("a", "ios:owner");
+  assert.equal(owner(), "agent-2");
+
+  // the workspace and permission guards apply to claims too
+  await state.setTarget("b", "ios:owner", "agent-4");
+  assert.equal(owner(), "agent-2");
+  await state.allowAgentTools("ios:owner", false);
+  await state.setTarget("a", "ios:owner", "agent-5");
+  assert.equal(owner(), "agent-2");
+  await state.allowAgentTools("ios:owner", true);
+
+  // releasing clears the owner with its assignment; adding it back starts unclaimed
+  assert.equal(await state.removeAssignment("a", "ios:owner"), true);
+  assert.equal(state.holderOf("ios:owner"), undefined);
+  await state.addAssignment(A, "ios:owner", false);
+  assert.equal(owner(), undefined);
+
+  // so does a takeover: the new workspace's assignment has no owner
+  await state.setTarget("a", "ios:owner", "agent-6");
+  assert.equal(owner(), "agent-6");
+  assert.equal(await state.addAssignment(B, "ios:owner", true), "Taken over from Checkout");
+  assert.equal(owner(), undefined);
+
+  await state.removeAssignment("b", "ios:owner");
+  await state.removeAssignment("a", "ios:other");
+});
+
+test("the stdio bridge passes its agent identity to use_device, or nothing for a legacy bridge", async () => {
+  const { spawn } = await import("node:child_process");
+  const { servePicker } = await import("./picker");
+  const socket = path.join(mkdtempSync(path.join(os.tmpdir(), "picker-agent-")), "picker.sock");
+  const claims: string[] = [];
+  const stop = servePicker(socket, {
+    list: async () => "ok",
+    use: async (w, id, agentId) => {
+      claims.push(`${w.workspaceId}:${id}:${agentId ?? "-"}`);
+      return "ok";
+    },
+    listPreviews: async () => "ok",
+    openPreview: async () => "ok",
+  });
+  const run = (env: Record<string, string>) =>
+    new Promise<void>((resolve, reject) => {
+      const bridge = spawn(process.execPath, [path.join(import.meta.dirname, "picker-bridge.mjs")], {
+        env: { PASEO_DEVICES_SOCKET: socket, PASEO_DEVICES_WORKSPACE: JSON.stringify(B), ...env },
+      });
+      bridge.stdin.end(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "use_device", arguments: { deviceId: "ios:1" } },
+        })}\n`,
+      );
+      let out = "";
+      bridge.stdout.on("data", (chunk) => (out += chunk));
+      bridge.on("error", reject);
+      bridge.on("close", () => {
+        assert.deepEqual(JSON.parse(out.trim()), {
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ type: "text", text: "ok" }] },
+        });
+        resolve();
+      });
+    });
+  await run({ PASEO_DEVICES_AGENT: "agent-9" });
+  await run({});
+  stop();
+  assert.deepEqual(claims, ["b:ios:1:agent-9", "b:ios:1:-"]);
+});
+
+test("the stdio bridge passes its agent identity to open_preview, or nothing for a legacy bridge", async () => {
+  const { spawn } = await import("node:child_process");
+  const { servePicker } = await import("./picker");
+  const socket = path.join(mkdtempSync(path.join(os.tmpdir(), "picker-open-agent-")), "picker.sock");
+  const claims: string[] = [];
+  const stop = servePicker(socket, {
+    list: async () => "ok",
+    use: async () => "ok",
+    listPreviews: async () => "ok",
+    openPreview: async (w, id, d, agentId) => {
+      claims.push(`${w.workspaceId}:${id}:${d ?? "-"}:${agentId ?? "-"}`);
+      return "ok";
+    },
+  });
+  const run = (env: Record<string, string>) =>
+    new Promise<void>((resolve, reject) => {
+      const bridge = spawn(process.execPath, [path.join(import.meta.dirname, "picker-bridge.mjs")], {
+        env: { PASEO_DEVICES_SOCKET: socket, PASEO_DEVICES_WORKSPACE: JSON.stringify(B), ...env },
+      });
+      bridge.stdin.end(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "open_preview", arguments: { previewId: "home/empty", deviceId: "ios:1" } },
+        })}\n`,
+      );
+      let out = "";
+      bridge.stdout.on("data", (chunk) => (out += chunk));
+      bridge.on("error", reject);
+      bridge.on("close", () => {
+        assert.deepEqual(JSON.parse(out.trim()), {
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ type: "text", text: "ok" }] },
+        });
+        resolve();
+      });
+    });
+  await run({ PASEO_DEVICES_AGENT: "agent-preview" });
+  await run({});
+  stop();
+  assert.deepEqual(claims, ["b:home/empty:ios:1:agent-preview", "b:home/empty:ios:1:-"]);
+});
+
+const previewFixture = () => ({
+  project: "App.xcodeproj",
+  scheme: "Previews",
+  bundleId: "com.example.previews",
+  previews: [{ id: "home/empty", title: "Home empty" }],
+});
+
+test("preview catalog: absent file is empty, bad data is clear, project stays inside the workspace", async () => {
+  const { readCatalog } = await import("./previews");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "previews-catalog-"));
+  const file = path.join(dir, "paseo-previews.json");
+  assert.equal(await readCatalog(dir), null);
+  writeFileSync(file, "{not json");
+  await assert.rejects(readCatalog(dir), /isn't valid JSON/);
+  const valid = previewFixture();
+  writeFileSync(file, JSON.stringify(valid));
+  assert.deepEqual((await readCatalog(dir))?.previews, valid.previews);
+  writeFileSync(file, JSON.stringify({ ...valid, previews: [valid.previews[0], valid.previews[0]] }));
+  await assert.rejects(readCatalog(dir), /unique/i);
+  writeFileSync(file, JSON.stringify({ ...valid, previews: [{ id: "../escape", title: "bad" }] }));
+  await assert.rejects(readCatalog(dir), /invalid preview id/i);
+  writeFileSync(file, JSON.stringify({ ...valid, project: "/tmp/App.xcodeproj" }));
+  await assert.rejects(readCatalog(dir), /relative/i);
+  writeFileSync(file, JSON.stringify({ ...valid, project: "notes.txt" }));
+  await assert.rejects(readCatalog(dir), /xcodeproj|xcodeworkspace/i);
+  const outside = mkdtempSync(path.join(os.tmpdir(), "previews-outside-"));
+  symlinkSync(outside, path.join(dir, "link"));
+  writeFileSync(file, JSON.stringify({ ...valid, project: "link/App.xcodeproj" }));
+  await assert.rejects(readCatalog(dir), /outside the workspace/i);
+});
+
+test("preview build settings: finds the preview app by bundle id in Xcode's nested target shape", async () => {
+  const { previewProduct } = await import("./previews");
+  // the real `-showBuildSettings -json` output is an array of targets with settings nested below
+  const settings = JSON.stringify([
+    {
+      action: "build",
+      target: "GratefulElk",
+      buildSettings: {
+        PRODUCT_BUNDLE_IDENTIFIER: "com.paseo.gratefulelk",
+        TARGET_BUILD_DIR: "/build/Debug-iphonesimulator",
+        FULL_PRODUCT_NAME: "GratefulElk.app",
+      },
+    },
+    {
+      action: "build",
+      target: "HangTenPreview",
+      buildSettings: {
+        PRODUCT_BUNDLE_IDENTIFIER: "com.paseo.preview.gratefulelk",
+        TARGET_BUILD_DIR: "/build/preview/Debug-iphonesimulator",
+        FULL_PRODUCT_NAME: "HangTenPreview.app",
+      },
+    },
+  ]);
+  assert.deepEqual(previewProduct(settings, "com.paseo.preview.gratefulelk"), {
+    appPath: path.join("/build/preview/Debug-iphonesimulator", "HangTenPreview.app"),
+  });
+  assert.throws(() => previewProduct(settings, "com.missing"), /No build product has the bundle id/);
+  assert.throws(() => previewProduct("{}", "com.paseo.preview.gratefulelk"), /Unexpected build settings/);
+  assert.throws(() => previewProduct("{", "com.paseo.preview.gratefulelk"), /as JSON/);
+  // the right bundle id but a missing product path is still a hard error
+  assert.throws(
+    () =>
+      previewProduct(
+        JSON.stringify([{ buildSettings: { PRODUCT_BUNDLE_IDENTIFIER: "com.paseo.preview.gratefulelk" } }]),
+        "com.paseo.preview.gratefulelk",
+      ),
+    /didn't report the preview app's build product/,
+  );
+});
+
+test("preview launch: one build per workspace, shared statuses, consent rechecked after build", async () => {
+  const { previewCatalog } = await import("../shared/previews");
+  const { Previews } = await import("./previews");
+  const catalog = previewCatalog.parse(previewFixture());
+  const plan = { udid: "UDID", bundleId: catalog.bundleId, previewId: "home/empty", appPath: "/tmp/App.app" };
+  const request = {
+    directory: "/w/app",
+    workspaceId: "a",
+    deviceId: "ios:preview",
+    previewId: "home/empty",
+    agentRequest: true,
+  };
+  const tick = async () => {
+    for (let i = 0; i < 25; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  await state.addAssignment(A, "ios:preview", false);
+  await state.allowAgentTools("ios:preview", true);
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let installs = 0;
+  let launches = 0;
+  const tracker = new Previews(
+    async () => {
+      await gate;
+      return plan;
+    },
+    async () => {
+      installs++;
+    },
+    async () => {
+      launches++;
+    },
+  );
+  assert.deepEqual(tracker.statusOf("ios:preview"), { state: "idle" });
+  const building = await tracker.launch(request, catalog);
+  assert.equal(building.state, "building");
+  assert.deepEqual(tracker.statusOf("ios:preview"), building);
+  await assert.rejects(tracker.launch(request, catalog), /already building/i);
+  release();
+  await tick();
+  assert.deepEqual(tracker.statusOf("ios:preview"), {
+    state: "opened",
+    previewId: "home/empty",
+    deviceId: "ios:preview",
+  });
+  assert.equal(installs, 1);
+  assert.equal(launches, 1);
+
+  const failed = new Previews(
+    async () => {
+      throw new Error("xcodebuild failed");
+    },
+    async () => {
+      installs++;
+    },
+    async () => {
+      launches++;
+    },
+  );
+  await failed.launch(request, catalog);
+  await tick();
+  const failedStatus = failed.statusOf("ios:preview");
+  assert.equal(failedStatus.state, "error");
+  assert.match(failedStatus.state === "error" ? failedStatus.error : "", /xcodebuild failed/);
+
+  // consent withdrawn after the build blocks install; the failed state is visible to UI and agent
+  await state.allowAgentTools("ios:preview", false);
+  const revoked = new Previews(
+    async () => plan,
+    async () => {
+      installs++;
+    },
+    async () => {
+      launches++;
+    },
+  );
+  await revoked.launch(request, catalog);
+  await tick();
+  assert.equal(installs, 1);
+  assert.equal(launches, 1);
+  const revokedStatus = revoked.statusOf("ios:preview");
+  assert.equal(revokedStatus.state, "error");
+  assert.match(revokedStatus.state === "error" ? revokedStatus.error : "", /no longer allowed/);
+  await state.removeAssignment("a", "ios:preview");
+});
+
+test("preview launch rechecks workspace and consent between install and launch", async () => {
+  const { previewCatalog } = await import("../shared/previews");
+  const { Previews } = await import("./previews");
+  const catalog = previewCatalog.parse(previewFixture());
+  const plan = { udid: "UDID", bundleId: catalog.bundleId, previewId: "home/empty", appPath: "/tmp/App.app" };
+  const request = {
+    directory: "/w/app",
+    workspaceId: "a",
+    deviceId: "ios:between",
+    previewId: "home/empty",
+    agentRequest: true,
+  };
+  const tick = async () => {
+    for (let i = 0; i < 25; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  await state.addAssignment(A, "ios:between", false);
+  await state.allowAgentTools("ios:between", true);
+  let launches = 0;
+  const tracker = new Previews(
+    async () => plan,
+    async () => {
+      // consent is revoked while the app is being installed, so the guard before launch must fire
+      await state.allowAgentTools("ios:between", false);
+    },
+    async () => {
+      launches++;
+    },
+  );
+  await tracker.launch(request, catalog);
+  await tick();
+  assert.equal(launches, 0);
+  const status = tracker.statusOf("ios:between");
+  assert.equal(status.state, "error");
+  assert.match(status.state === "error" ? status.error : "", /no longer allowed/);
+  await state.removeAssignment("a", "ios:between");
+});
+
+test("preview launch guards: unknown id and another workspace's simulator", async () => {
+  const { previewCatalog } = await import("../shared/previews");
+  const { assertKnownPreview, assertWorkspaceDevice } = await import("./previews");
+  const catalog = previewCatalog.parse(previewFixture());
+  assert.doesNotThrow(() => assertKnownPreview(catalog, "home/empty"));
+  assert.throws(() => assertKnownPreview(catalog, "missing"), /Unknown preview/);
+  assert.throws(() => assertKnownPreview(null, "home/empty"), /paseo-previews.json/);
+  await state.addAssignment(A, "ios:guard", false);
+  assert.equal(assertWorkspaceDevice("a", "ios:guard").directory, "/w/app");
+  assert.throws(() => assertWorkspaceDevice("b", "ios:guard"), /isn't assigned/);
+  assert.throws(() => assertWorkspaceDevice("a", "android:guard"), /iOS simulators/);
+  await state.removeAssignment("a", "ios:guard");
+});
+
+test("preview status is limited to this workspace's assigned, permitted simulator", async () => {
+  const { previewStatusDevice } = await import("./previews");
+  await state.addAssignment(A, "ios:status-a", false);
+  await state.addAssignment(B, "ios:status-b", false);
+  await state.allowAgentTools("ios:status-a", true);
+  await state.allowAgentTools("ios:status-b", true);
+  // with no override, status follows this workspace's current target
+  assert.equal(previewStatusDevice("a"), "ios:status-a");
+  // an explicit device of this workspace's is accepted
+  assert.equal(previewStatusDevice("a", "ios:status-a"), "ios:status-a");
+  // another workspace's simulator can't be named to expose its status
+  assert.throws(() => previewStatusDevice("a", "ios:status-b"), /isn't assigned/);
+  assert.throws(() => previewStatusDevice("a", "android:status"), /iOS simulators/);
+  // a simulator agents may not drive can't be named either
+  await state.allowAgentTools("ios:status-a", false);
+  assert.throws(() => previewStatusDevice("a", "ios:status-a"), /not allowed/);
+  await state.allowAgentTools("ios:status-a", true);
+  await state.removeAssignment("a", "ios:status-a");
+  await state.removeAssignment("b", "ios:status-b");
+});
+
+test("claiming a started preview drives its simulator and routes annotations to the agent's chat", async () => {
+  const { claimPreviewTarget } = await import("./agents");
+  await state.addAssignment(A, "ios:claim", false);
+  await state.allowAgentTools("ios:claim", true);
+  await claimPreviewTarget("a", "ios:claim", "agent-chat");
+  assert.equal(state.assignments().find((x) => x.deviceId === "ios:claim")?.agentId, "agent-chat");
+  assert.equal(state.targetOf("a")?.deviceId, "ios:claim");
+  // configs were synced, so the device tools drive this simulator
+  const written = JSON.parse(readFileSync(path.join(state.STATE_DIR, "agent-device", "a.json"), "utf8"));
+  assert.deepEqual([written.platform, written.udid], ["ios", "claim"]);
+  // a legacy anonymous launch still drives it but leaves the chat owner alone
+  await claimPreviewTarget("a", "ios:claim");
+  assert.equal(state.assignments().find((x) => x.deviceId === "ios:claim")?.agentId, "agent-chat");
+  await state.removeAssignment("a", "ios:claim");
+});
+
+test("the picker offers list_previews and open_preview and routes them to shared logic", async () => {
+  const { spawn } = await import("node:child_process");
+  const { servePicker } = await import("./picker");
+  const socket = path.join(mkdtempSync(path.join(os.tmpdir(), "picker-previews-")), "picker.sock");
+  const calls: string[] = [];
+  const stop = servePicker(socket, {
+    list: async () => "ok",
+    use: async () => "ok",
+    listPreviews: async (w, d) => {
+      calls.push(`list:${w.workspaceId}:${d ?? "-"}`);
+      return `previews for ${w.workspaceName}`;
+    },
+    openPreview: async (w, id, d) => {
+      calls.push(`open:${w.workspaceId}:${id}:${d ?? "-"}`);
+      return `building ${id}`;
+    },
+  });
+  const bridge = spawn(process.execPath, [path.join(import.meta.dirname, "picker-bridge.mjs")], {
+    env: { PASEO_DEVICES_SOCKET: socket, PASEO_DEVICES_WORKSPACE: JSON.stringify(B) },
+  });
+  const call = (id: number, name: string, args: Record<string, string> = {}) =>
+    JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+  bridge.stdin.end(
+    [
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      call(2, "list_previews"),
+      call(3, "list_previews", { deviceId: "ios:1" }),
+      call(4, "open_preview", { previewId: "home/empty" }),
+      call(5, "open_preview"),
+    ].join("\n") + "\n",
+  );
+  let out = "";
+  for await (const chunk of bridge.stdout) out += chunk;
+  stop();
+  const answers = out
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    answers.map((a) => a.id),
+    [1, 2, 3, 4, 5],
+  );
+  assert.deepEqual(
+    answers[0].result.tools.map((t: { name: string }) => t.name),
+    ["list_devices", "use_device", "list_previews", "open_preview"],
+  );
+  assert.equal(answers[1].result.content[0].text, "previews for Onboarding");
+  assert.equal(answers[2].result.content[0].text, "previews for Onboarding");
+  assert.equal(answers[3].result.content[0].text, "building home/empty");
+  assert.equal(answers[4].result.isError, true);
+  assert.match(answers[4].result.content[0].text, /previewId/);
+  assert.deepEqual(calls, ["list:b:-", "list:b:ios:1", "open:b:home/empty:-"]);
 });

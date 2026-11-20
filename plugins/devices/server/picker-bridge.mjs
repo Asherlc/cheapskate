@@ -4,12 +4,20 @@
 import http from "node:http";
 import readline from "node:readline";
 
-const { PASEO_DEVICES_SOCKET: socketPath, PASEO_DEVICES_WORKSPACE: workspace = "" } = process.env;
+const {
+  PASEO_DEVICES_SOCKET: socketPath,
+  PASEO_DEVICES_WORKSPACE: workspace = "",
+  PASEO_DEVICES_AGENT: agent = "",
+} = process.env;
 
 function send(line) {
   return new Promise((resolve) => {
     const request = http.request(
-      { socketPath, method: "POST", path: `/?workspace=${encodeURIComponent(workspace)}` },
+      {
+        socketPath,
+        method: "POST",
+        path: `/?workspace=${encodeURIComponent(workspace)}&agent=${encodeURIComponent(agent)}`,
+      },
       (response) => {
         let body = "";
         response.setEncoding("utf8");

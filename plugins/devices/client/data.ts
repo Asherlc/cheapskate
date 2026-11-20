@@ -2,7 +2,16 @@ import { useRpc } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { agentToolsRpc, assignRpc, createRpc, listRpc, powerRpc, type Device } from "../shared/contracts";
+import {
+  agentToolsRpc,
+  assignRpc,
+  createRpc,
+  listPreviewsRpc,
+  listRpc,
+  openPreviewRpc,
+  powerRpc,
+  type Device,
+} from "../shared/contracts";
 
 // The app shares one query cache between its plugins and hosts: keys start with the host.
 const queryKey = (hostId: string) => ["devices", hostId];
@@ -53,6 +62,13 @@ export function useDeviceRpcs() {
     create: useRpc(createRpc),
     power: useRpc(powerRpc),
     agentTools: useRpc(agentToolsRpc),
+  };
+}
+
+export function usePreviewRpcs() {
+  return {
+    listPreviews: useRpc(listPreviewsRpc),
+    openPreview: useRpc(openPreviewRpc),
   };
 }
 
