@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { PluginHookContext, PluginServerContext } from "@getpaseo/plugin/server";
@@ -137,6 +138,8 @@ export function injectDeviceTools(server: PluginServerContext, ready: Promise<vo
     await syncAgentConfigs().catch((error) => console.error("syncing agent-device configs:", error));
     // A Git update stages the plug-in before its new directory is written to config.json.
     const directory = pluginDir();
+    // A live agent-device daemon still loads files from its original checkout.
+    const installation = createHash("sha256").update(directory).digest("hex").slice(0, 12);
     return {
       ...request,
       config: {
@@ -150,6 +153,7 @@ export function injectDeviceTools(server: PluginServerContext, ready: Promise<vo
             env: {
               ...NODE_ENV,
               AGENT_DEVICE_CONFIG: configFile(workspace.workspaceId),
+              AGENT_DEVICE_STATE_DIR: path.join(STATE_DIR, "agent-runtime", installation),
               AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1",
             },
           },
